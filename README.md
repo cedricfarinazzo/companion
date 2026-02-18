@@ -70,6 +70,28 @@ bun run typecheck
 bun run test
 ```
 
+## Voice Input (offline speech-to-text)
+
+The chat input bar includes a 🎤 microphone button that transcribes speech fully offline using [whisper.cpp](https://github.com/ggerganov/whisper.cpp) via [`nodejs-whisper`](https://github.com/ChetanXpro/nodejs-whisper).
+
+**Requirements**
+
+- `nodejs-whisper` must be installed: `cd web && bun add nodejs-whisper`
+- Build tools (`make`, `gcc`) must be present for the native compilation step
+- The Whisper model is downloaded automatically on first use (~150 MB for `base.en`)
+
+**Configuration**
+
+| Variable | Default | Description |
+|---|---|---|
+| `WHISPER_MODEL` | `base.en` | Model to use. Options: `tiny`, `tiny.en`, `base`, `base.en`, `small`, `small.en`, `medium`, `medium.en`, `large-v1`, `large`, `large-v3-turbo` |
+
+```bash
+WHISPER_MODEL=small.en bun run start
+```
+
+The endpoint `POST /api/transcribe` accepts a `multipart/form-data` body with an `audio` WAV file field and returns `{ text: string, duration_ms: number }`. It returns `{ status: "loading" }` with HTTP 503 while the model is downloading (the browser retries automatically).
+
 ## Docs
 - Protocol reverse engineering: [`WEBSOCKET_PROTOCOL_REVERSED.md`](WEBSOCKET_PROTOCOL_REVERSED.md)
 - Contributor and architecture guide: [`CLAUDE.md`](CLAUDE.md)

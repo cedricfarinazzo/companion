@@ -16,6 +16,7 @@ import { GitHubPRDisplay, CodexRateLimitsSection, CodexTokenDetailsSection } fro
 import { SessionCreationProgress } from "./SessionCreationProgress.js";
 import { SessionLaunchOverlay } from "./SessionLaunchOverlay.js";
 import type { CreationProgressEvent } from "../types.js";
+import { VoiceButton } from "./VoiceButton.js";
 
 // ─── Mock Data ──────────────────────────────────────────────────────────────
 
@@ -1005,6 +1006,79 @@ export function Playground() {
                 </div>
               </div>
             </Card>
+          </div>
+        </Section>
+
+        {/* ─── VoiceButton ─────────────────────────────── */}
+        <Section title="VoiceButton" description="Push-to-talk microphone button states">
+          <div className="flex flex-wrap items-center gap-4">
+            {/* Idle */}
+            <div className="flex flex-col items-center gap-1.5">
+              <button
+                type="button"
+                title="Start voice input"
+                className="flex items-center justify-center w-8 h-8 rounded-lg transition-colors text-cc-muted hover:text-cc-fg hover:bg-cc-hover cursor-pointer"
+              >
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-4 h-4">
+                  <rect x="5" y="1" width="6" height="9" rx="3" />
+                  <path d="M2 8a6 6 0 0 0 12 0" strokeLinecap="round" />
+                  <line x1="8" y1="14" x2="8" y2="11" strokeLinecap="round" />
+                  <line x1="5.5" y1="14" x2="10.5" y2="14" strokeLinecap="round" />
+                </svg>
+              </button>
+              <span className="text-[11px] text-cc-muted">idle</span>
+            </div>
+            {/* Recording */}
+            <div className="flex flex-col items-center gap-1.5">
+              <button
+                type="button"
+                title="Recording — click to stop"
+                className="flex items-center justify-center w-8 h-8 rounded-lg transition-colors text-red-500 bg-red-500/10 hover:bg-red-500/20 cursor-pointer"
+              >
+                <span className="relative flex items-center justify-center">
+                  <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse" />
+                </span>
+              </button>
+              <span className="text-[11px] text-cc-muted">recording</span>
+            </div>
+            {/* Transcribing */}
+            <div className="flex flex-col items-center gap-1.5">
+              <button
+                type="button"
+                disabled
+                title="Transcribing…"
+                className="flex items-center justify-center w-8 h-8 rounded-lg transition-colors text-cc-muted opacity-70 cursor-not-allowed"
+              >
+                <svg
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  className="w-4 h-4 animate-spin"
+                >
+                  <circle cx="8" cy="8" r="6" strokeDasharray="28 10" />
+                </svg>
+              </button>
+              <span className="text-[11px] text-cc-muted">transcribing</span>
+            </div>
+            {/* Error */}
+            <div className="flex flex-col items-center gap-1.5">
+              <button
+                type="button"
+                title="Transcription failed"
+                className="flex items-center justify-center w-8 h-8 rounded-lg transition-colors text-cc-error bg-cc-error/10 cursor-pointer"
+              >
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4">
+                  <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />
+                </svg>
+              </button>
+              <span className="text-[11px] text-cc-muted">error</span>
+            </div>
+            {/* Live instance */}
+            <div className="flex flex-col items-center gap-1.5">
+              <VoiceButton onTranscript={(t) => console.log("[playground] transcript:", t)} />
+              <span className="text-[11px] text-cc-muted">live</span>
+            </div>
           </div>
         </Section>
 

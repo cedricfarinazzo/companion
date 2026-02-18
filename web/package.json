@@ -41,6 +41,7 @@
     "croner": "^10.0.1",
     "diff": "^8.0.3",
     "hono": "^4.7.0",
+    "nodejs-whisper": "^0.1.13",
     "posthog-js": "^1.347.2"
   },
   "devDependencies": {

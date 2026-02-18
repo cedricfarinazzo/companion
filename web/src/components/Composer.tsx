@@ -4,6 +4,7 @@ import { sendToSession } from "../ws.js";
 import { api } from "../api.js";
 import { CLAUDE_MODES, CODEX_MODES } from "../utils/backends.js";
 import type { ModeOption } from "../utils/backends.js";
+import { VoiceButton } from "./VoiceButton.js";
 
 let idCounter = 0;
 
@@ -425,7 +426,7 @@ export function Composer({ sessionId }: { sessionId: string }) {
               </button>
             )}
 
-            {/* Right: image + send/stop */}
+            {/* Right: image + voice + send/stop */}
             <div className="flex items-center gap-1">
               <button
                 onClick={() => fileInputRef.current?.click()}
@@ -443,6 +444,14 @@ export function Composer({ sessionId }: { sessionId: string }) {
                   <path d="M2 11l3-3 2 2 3-4 4 5" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
               </button>
+
+              <VoiceButton
+                onTranscript={(transcript) => {
+                  setText((prev) => prev ? `${prev} ${transcript}` : transcript);
+                  textareaRef.current?.focus();
+                }}
+                disabled={!isConnected}
+              />
 
               {isRunning ? (
                 <button

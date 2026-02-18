@@ -30,6 +30,7 @@ import {
 } from "./update-checker.js";
 import { refreshServiceDefinition } from "./service.js";
 import type { AssistantManager } from "./assistant-manager.js";
+import { getWhisperStatus, initWhisper, transcribeAudio } from "./whisper.js";
 
 const UPDATE_CHECK_STALE_MS = 5 * 60 * 1000;
 const ROUTES_DIR = dirname(fileURLToPath(import.meta.url));
@@ -1543,6 +1544,60 @@ export function createRoutes(
       ok: true,
       message: "Update started. Server will restart shortly.",
     });
+  });
+
+  // ─── Speech-to-text (Whisper) ─────────────────────────────────────
+
+  api.get("/transcribe/status", (c) => {
+    return c.json({ status: getWhisperStatus() });
+  });
+
+  api.post("/transcribe", async (c) => {
+    const status = getWhisperStatus();
+    if (status === "loading") {
+      return c.json({ status: "loading" }, 503);
+    }
+    if (status === "idle") {
+      // Kick off initialisation in the background and tell the client to retry
+      initWhisper().catch(() => { /* errors are logged inside initWhisper */ });
+      return c.json({ status: "loading" }, 503);
+    }
+    if (status === "unavailable") {
+      return c.json({ error: "nodejs-whisper is not installed on this server" }, 501);
+    }
+
+    let formData: FormData;
+    try {
+      formData = await c.req.formData();
+    } catch {
+      return c.json({ error: "Expected multipart/form-data" }, 400);
+    }
+
+    const audioEntry = formData.get("audio");
+    if (!audioEntry || !(audioEntry instanceof File)) {
+      return c.json({ error: "Missing 'audio' file field" }, 400);
+    }
+
+    if (audioEntry.size < 100) {
+      return c.json({ error: "Audio too short" }, 400);
+    }
+
+    const audioBuffer = Buffer.from(await audioEntry.arrayBuffer());
+
+    try {
+      const result = await transcribeAudio(audioBuffer);
+      return c.json(result);
+    } catch (err: unknown) {
+      const code = (err as { code?: string }).code;
+      if (code === "MODEL_LOADING") {
+        return c.json({ status: "loading" }, 503);
+      }
+      if (code === "UNAVAILABLE") {
+        return c.json({ error: "nodejs-whisper is not installed on this server" }, 501);
+      }
+      console.error("[transcribe] Error:", err);
+      return c.json({ error: "Transcription failed" }, 500);
+    }
   });
 
   // ─── Terminal ──────────────────────────────────────────────────────
