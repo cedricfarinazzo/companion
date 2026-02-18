@@ -285,6 +285,23 @@ const MSG_TOOL_ERROR: ChatMessage = {
   timestamp: Date.now() - 20000,
 };
 
+// Pending tool (no result yet)
+const MSG_TOOL_PENDING: ChatMessage = {
+  id: "msg-8",
+  role: "assistant",
+  content: "",
+  contentBlocks: [
+    { type: "text", text: "Let me rebuild the project to verify the changes." },
+    {
+      type: "tool_use",
+      id: "tu-4",
+      name: "Bash",
+      input: { command: "npm run build", description: "Build the project" },
+    },
+  ],
+  timestamp: Date.now() - 5000,
+};
+
 // Tasks
 const MOCK_TASKS: TaskItem[] = [
   { id: "1", subject: "Create JWT utility module", description: "", status: "completed" },
@@ -492,6 +509,7 @@ export function Playground() {
       MSG_ASSISTANT,
       MSG_ASSISTANT_TOOLS,
       MSG_TOOL_ERROR,
+      MSG_TOOL_PENDING,
     ]);
     store.setStreaming(sessionId, "I'm updating tests and then I'll run the full suite.");
     store.setStreamingStats(sessionId, { startedAt: Date.now() - 12000, outputTokens: 1200 });
@@ -629,6 +647,9 @@ export function Playground() {
             </Card>
             <Card label="Tool result with error">
               <MessageBubble message={MSG_TOOL_ERROR} />
+            </Card>
+            <Card label="Pending tool (no result yet)">
+              <MessageBubble message={MSG_TOOL_PENDING} />
             </Card>
             <Card label="System message">
               <MessageBubble message={MSG_SYSTEM} />

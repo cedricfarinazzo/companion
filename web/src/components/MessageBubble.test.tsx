@@ -301,3 +301,104 @@ describe("MessageBubble - content block grouping", () => {
     expect(labels.length).toBe(2);
   });
 });
+
+// ─── Tool result pairing ─────────────────────────────────────────────────────
+
+describe("MessageBubble - tool result pairing", () => {
+  it("pairs tool_result with tool_use by tool_use_id", () => {
+    const msg = makeMessage({
+      role: "assistant",
+      content: "",
+      contentBlocks: [
+        { type: "tool_use", id: "tu-1", name: "Bash", input: { command: "pwd" } },
+        { type: "tool_result", tool_use_id: "tu-1", content: "/home/user/project" },
+      ],
+    });
+    const { container } = render(<MessageBubble message={msg} />);
+
+    // Tool should be rendered
+    expect(screen.getByText("Terminal")).toBeTruthy();
+    
+    // Success indicator should be present (checkmark icon)
+    const successIcon = container.querySelector(".text-cc-success");
+    expect(successIcon).toBeTruthy();
+  });
+
+  it("shows pending state for tool_use without result", () => {
+    const msg = makeMessage({
+      role: "assistant",
+      content: "",
+      contentBlocks: [
+        { type: "tool_use", id: "tu-1", name: "Bash", input: { command: "npm build" } },
+      ],
+    });
+    const { container } = render(<MessageBubble message={msg} />);
+
+    expect(screen.getByText("Terminal")).toBeTruthy();
+    
+    // Spinner/loading indicator should be present
+    const spinner = container.querySelector(".animate-spin");
+    expect(spinner).toBeTruthy();
+  });
+
+  it("shows error state for tool_result with is_error flag", () => {
+    const msg = makeMessage({
+      role: "assistant",
+      content: "",
+      contentBlocks: [
+        { type: "tool_use", id: "tu-1", name: "Bash", input: { command: "bad command" } },
+        { type: "tool_result", tool_use_id: "tu-1", content: "Error: command not found", is_error: true },
+      ],
+    });
+    const { container } = render(<MessageBubble message={msg} />);
+
+    expect(screen.getByText("Terminal")).toBeTruthy();
+    
+    // Error indicator should be present
+    const errorIcon = container.querySelector(".text-cc-error");
+    expect(errorIcon).toBeTruthy();
+    
+    // Error border should be present
+    const errorBorder = container.querySelector(".border-cc-error\\/40");
+    expect(errorBorder).toBeTruthy();
+  });
+
+  it("renders orphaned tool_result as standalone block", () => {
+    // If a tool_result comes without a preceding tool_use in the same message,
+    // it should be rendered as a standalone content block
+    const msg = makeMessage({
+      role: "assistant",
+      content: "",
+      contentBlocks: [
+        { type: "tool_result", tool_use_id: "tu-unknown", content: "Some output" },
+      ],
+    });
+    render(<MessageBubble message={msg} />);
+
+    // Should render the result content
+    expect(screen.getByText("Some output")).toBeTruthy();
+  });
+
+  it("handles multiple tool_use/tool_result pairs in sequence", () => {
+    const msg = makeMessage({
+      role: "assistant",
+      content: "",
+      contentBlocks: [
+        { type: "tool_use", id: "tu-1", name: "Read", input: { file_path: "/a.ts" } },
+        { type: "tool_result", tool_use_id: "tu-1", content: "file content A" },
+        { type: "tool_use", id: "tu-2", name: "Read", input: { file_path: "/b.ts" } },
+        { type: "tool_result", tool_use_id: "tu-2", content: "file content B" },
+      ],
+    });
+    const { container } = render(<MessageBubble message={msg} />);
+
+    // Both tools should be grouped together (same tool type)
+    const groupBadge = screen.getByText("2");
+    expect(groupBadge).toBeTruthy();
+    
+    // Should have success indicators (both completed)
+    const successIcons = container.querySelectorAll(".text-cc-success");
+    // At least one success icon should be present on the group header
+    expect(successIcons.length).toBeGreaterThan(0);
+  });
+});

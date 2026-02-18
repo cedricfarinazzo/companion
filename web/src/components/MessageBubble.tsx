@@ -53,6 +53,10 @@ interface ToolGroupItem {
   id: string;
   name: string;
   input: Record<string, unknown>;
+  result?: {
+    content: string | ContentBlock[];
+    is_error?: boolean;
+  };
 }
 
 type GroupedBlock =
@@ -61,18 +65,44 @@ type GroupedBlock =
 
 function groupContentBlocks(blocks: ContentBlock[]): GroupedBlock[] {
   const groups: GroupedBlock[] = [];
+  // Map tool_use_id to the tool_use block for quick lookup
+  const toolUseById = new Map<string, { groupIndex: number; itemIndex: number }>();
 
   for (const block of blocks) {
     if (block.type === "tool_use") {
       const last = groups[groups.length - 1];
       if (last?.kind === "tool_group" && last.name === block.name) {
+        // Add to existing tool group
+        const itemIndex = last.items.length;
         last.items.push({ id: block.id, name: block.name, input: block.input });
+        toolUseById.set(block.id, { groupIndex: groups.length - 1, itemIndex });
       } else {
+        // Create new tool group
+        const groupIndex = groups.length;
         groups.push({
           kind: "tool_group",
           name: block.name,
           items: [{ id: block.id, name: block.name, input: block.input }],
         });
+        toolUseById.set(block.id, { groupIndex, itemIndex: 0 });
+      }
+    } else if (block.type === "tool_result") {
+      // Try to associate this result with its tool_use
+      const toolLocation = toolUseById.get(block.tool_use_id);
+      if (toolLocation) {
+        const group = groups[toolLocation.groupIndex];
+        if (group.kind === "tool_group") {
+          const item = group.items[toolLocation.itemIndex];
+          if (item) {
+            item.result = {
+              content: block.content,
+              is_error: block.is_error,
+            };
+          }
+        }
+      } else {
+        // Orphaned tool_result (tool_use not in this message), render as standalone
+        groups.push({ kind: "content", block });
       }
     } else {
       groups.push({ kind: "content", block });
@@ -109,7 +139,7 @@ function AssistantMessage({ message }: { message: ChatMessage }) {
           // Single tool_use renders as before
           if (group.items.length === 1) {
             const item = group.items[0];
-            return <ToolBlock key={i} name={item.name} input={item.input} toolUseId={item.id} />;
+            return <ToolBlock key={i} name={item.name} input={item.input} toolUseId={item.id} result={item.result} />;
           }
           // Grouped tool_uses
           return <ToolGroupBlock key={i} name={group.name} items={group.items} />;
@@ -241,6 +271,7 @@ function ContentBlockRenderer({ block }: { block: ContentBlock }) {
   }
 
   if (block.type === "tool_use") {
+    // Orphaned tool_use (standalone, not grouped) - render without result
     return <ToolBlock name={block.name} input={block.input} toolUseId={block.id} />;
   }
 
@@ -266,6 +297,11 @@ function ToolGroupBlock({ name, items }: { name: string; items: ToolGroupItem[] 
   const iconType = getToolIcon(name);
   const label = getToolLabel(name);
 
+  // Count status
+  const completedCount = items.filter(item => item.result && !item.result.is_error).length;
+  const errorCount = items.filter(item => item.result?.is_error).length;
+  const pendingCount = items.filter(item => !item.result).length;
+
   return (
     <div className="border border-cc-border rounded-[10px] overflow-hidden bg-cc-card">
       <button
@@ -284,19 +320,30 @@ function ToolGroupBlock({ name, items }: { name: string; items: ToolGroupItem[] 
         <span className="text-[10px] text-cc-muted bg-cc-hover rounded-full px-1.5 py-0.5 tabular-nums">
           {items.length}
         </span>
+        {/* Status indicators */}
+        {errorCount > 0 && (
+          <span className="text-[10px] text-cc-error bg-cc-error/10 rounded-full px-1.5 py-0.5 tabular-nums">
+            {errorCount} error{errorCount !== 1 ? "s" : ""}
+          </span>
+        )}
+        {pendingCount > 0 && (
+          <svg className="w-3 h-3 text-cc-primary animate-spin shrink-0" viewBox="0 0 16 16" fill="none">
+            <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.5" strokeDasharray="28" strokeDashoffset="8" strokeLinecap="round" />
+          </svg>
+        )}
       </button>
 
       {open && (
-        <div className="border-t border-cc-border px-3 py-1.5">
-          {items.map((item, i) => {
-            const preview = getPreview(item.name, item.input);
-            return (
-              <div key={item.id || i} className="flex items-center gap-2 py-1 text-xs text-cc-muted font-mono-code truncate">
-                <span className="w-1 h-1 rounded-full bg-cc-muted/40 shrink-0" />
-                <span className="truncate">{preview || JSON.stringify(item.input).slice(0, 80)}</span>
-              </div>
-            );
-          })}
+        <div className="border-t border-cc-border px-3 py-1.5 space-y-1">
+          {items.map((item, i) => (
+            <ToolBlock 
+              key={item.id || i} 
+              name={item.name} 
+              input={item.input} 
+              toolUseId={item.id}
+              result={item.result}
+            />
+          ))}
         </div>
       )}
     </div>
