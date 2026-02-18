@@ -10,6 +10,7 @@ import { getModelsForBackend, getModesForBackend, getDefaultModel, getDefaultMod
 import type { BackendType } from "../types.js";
 import { EnvManager } from "./EnvManager.js";
 import { FolderPicker } from "./FolderPicker.js";
+import { VoiceButton } from "./VoiceButton.js";
 
 interface ImageAttachment {
   name: string;
@@ -506,6 +507,14 @@ export function HomePage() {
                   <path d="M2 11l3-3 2 2 3-4 4 5" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
               </button>
+
+              <VoiceButton
+                onTranscript={(transcript) => {
+                  setText((prev) => prev ? `${prev} ${transcript}` : transcript);
+                  textareaRef.current?.focus();
+                }}
+                disabled={sending}
+              />
 
               {/* Send button */}
               <button

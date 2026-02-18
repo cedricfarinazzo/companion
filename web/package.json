@@ -41,8 +41,10 @@
     "croner": "^10.0.1",
     "diff": "^8.0.3",
     "hono": "^4.7.0",
-    "nodejs-whisper": "^0.1.13",
     "posthog-js": "^1.347.2"
+  },
+  "optionalDependencies": {
+    "nodejs-whisper": "^0.1.13"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.0",
