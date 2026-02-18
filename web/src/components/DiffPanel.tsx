@@ -7,7 +7,7 @@ import { DiffViewer } from "./DiffViewer.js";
 const STATUS_BADGE: Record<string, { label: string; className: string }> = {
   modified: { label: "M", className: "text-cc-warning" },
   added: { label: "A", className: "text-cc-success" },
-  deleted: { label: "D", className: "text-cc-danger" },
+  deleted: { label: "D", className: "text-cc-error" },
   renamed: { label: "R", className: "text-cc-primary" },
   untracked: { label: "?", className: "text-cc-muted" },
 };
