@@ -12,6 +12,7 @@ import type { SessionStore } from "./session-store.js";
 import type { BackendType } from "./session-types.js";
 import type { RecorderManager } from "./recorder.js";
 import { CodexAdapter } from "./codex-adapter.js";
+import { CopilotAdapter } from "./copilot-adapter.js";
 import { resolveBinary, getEnrichedPath } from "./path-resolver.js";
 import { containerManager } from "./container-manager.js";
 import {
@@ -87,6 +88,7 @@ export interface LaunchOptions {
   cwd?: string;
   claudeBinary?: string;
   codexBinary?: string;
+  copilotBinary?: string;
   allowedTools?: string[];
   env?: Record<string, string>;
   backendType?: BackendType;
@@ -106,7 +108,7 @@ export interface LaunchOptions {
 
 /**
  * Manages CLI backend processes (Claude Code via --sdk-url WebSocket,
- * or Codex via app-server stdio).
+ * or Codex via app-server stdio, or Copilot CLI via -p programmatic mode).
  */
 export class CliLauncher {
   private sessions = new Map<string, SdkSessionInfo>();
@@ -117,6 +119,7 @@ export class CliLauncher {
   private store: SessionStore | null = null;
   private recorder: RecorderManager | null = null;
   private onCodexAdapter: ((sessionId: string, adapter: CodexAdapter) => void) | null = null;
+  private onCopilotAdapter: ((sessionId: string, adapter: CopilotAdapter) => void) | null = null;
   private exitHandlers: ((sessionId: string, exitCode: number | null) => void)[] = [];
 
   constructor(port: number) {
@@ -126,6 +129,11 @@ export class CliLauncher {
   /** Register a callback for when a CodexAdapter is created (WsBridge needs to attach it). */
   onCodexAdapterCreated(cb: (sessionId: string, adapter: CodexAdapter) => void): void {
     this.onCodexAdapter = cb;
+  }
+
+  /** Register a callback for when a CopilotAdapter is created (WsBridge needs to attach it). */
+  onCopilotAdapterCreated(cb: (sessionId: string, adapter: CopilotAdapter) => void): void {
+    this.onCopilotAdapter = cb;
   }
 
   /** Register a callback for when a CLI/Codex process exits. */
@@ -224,6 +232,8 @@ export class CliLauncher {
 
     if (backendType === "codex") {
       this.spawnCodex(sessionId, info, options);
+    } else if (backendType === "copilot") {
+      this.spawnCopilot(sessionId, info, options);
     } else {
       this.spawnCLI(sessionId, info, options);
     }
@@ -315,6 +325,13 @@ export class CliLauncher {
         containerName: info.containerName,
         containerImage: info.containerImage,
         env: runtimeEnv,
+      });
+    } else if (info.backendType === "copilot") {
+      this.spawnCopilot(sessionId, info, {
+        cwd: info.cwd,
+        env: runtimeEnv,
+        // On relaunch, resume the previous session if one exists
+        ...(info.cliSessionId ? { resume: true } : {}),
       });
     } else {
       this.spawnCLI(sessionId, info, {
@@ -693,6 +710,44 @@ export class CliLauncher {
         try { handler(sessionId, exitCode); } catch {}
       }
     });
+
+    this.persistState();
+  }
+
+  /**
+   * Spawn a Copilot CLI adapter for a session.
+   * The Copilot CLI uses programmatic mode (-p flag) for each user turn,
+   * and --resume to continue the conversation across turns.
+   */
+  private spawnCopilot(sessionId: string, info: SdkSessionInfo, options: LaunchOptions & { resume?: boolean }): void {
+    let binary = options.copilotBinary || "copilot";
+    const resolved = resolveBinary(binary);
+    if (resolved) {
+      binary = resolved;
+    } else {
+      console.error(`[cli-launcher] Binary "${binary}" not found in PATH`);
+      info.state = "exited";
+      info.exitCode = 127;
+      this.persistState();
+      return;
+    }
+
+    console.log(`[cli-launcher] Spawning Copilot session ${sessionId} (cwd=${info.cwd})`);
+
+    const adapter = new CopilotAdapter(sessionId, {
+      cwd: info.cwd,
+      binary,
+      resume: options.resume === true,
+      env: options.env,
+    });
+
+    // Mark as connected immediately (adapter manages its own processes)
+    info.state = "connected";
+
+    // Notify the WsBridge to attach this adapter
+    if (this.onCopilotAdapter) {
+      this.onCopilotAdapter(sessionId, adapter);
+    }
 
     this.persistState();
   }

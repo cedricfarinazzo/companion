@@ -278,7 +278,7 @@ export function HomePage() {
 
     const store = useStore.getState();
     store.clearCreation();
-    store.setSessionCreating(true, backend as "claude" | "codex");
+    store.setSessionCreating(true, backend as "claude" | "codex" | "copilot");
 
     try {
       // Disconnect current session if any

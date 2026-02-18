@@ -9,6 +9,8 @@ import {
   CODEX_MODELS,
   CLAUDE_MODES,
   CODEX_MODES,
+  COPILOT_MODELS,
+  COPILOT_MODES,
 } from "./backends.js";
 
 describe("toModelOptions", () => {
@@ -78,6 +80,10 @@ describe("getModelsForBackend", () => {
   it("returns codex models for codex backend", () => {
     expect(getModelsForBackend("codex")).toBe(CODEX_MODELS);
   });
+
+  it("returns copilot models for copilot backend", () => {
+    expect(getModelsForBackend("copilot")).toBe(COPILOT_MODELS);
+  });
 });
 
 describe("getModesForBackend", () => {
@@ -87,6 +93,10 @@ describe("getModesForBackend", () => {
 
   it("returns codex modes for codex backend", () => {
     expect(getModesForBackend("codex")).toBe(CODEX_MODES);
+  });
+
+  it("returns copilot modes for copilot backend", () => {
+    expect(getModesForBackend("copilot")).toBe(COPILOT_MODES);
   });
 });
 
@@ -98,6 +108,10 @@ describe("getDefaultModel", () => {
   it("returns first codex model for codex backend", () => {
     expect(getDefaultModel("codex")).toBe(CODEX_MODELS[0].value);
   });
+
+  it("returns first copilot model for copilot backend", () => {
+    expect(getDefaultModel("copilot")).toBe(COPILOT_MODELS[0].value);
+  });
 });
 
 describe("getDefaultMode", () => {
@@ -107,6 +121,10 @@ describe("getDefaultMode", () => {
 
   it("returns first codex mode for codex backend", () => {
     expect(getDefaultMode("codex")).toBe(CODEX_MODES[0].value);
+  });
+
+  it("returns first copilot mode for copilot backend", () => {
+    expect(getDefaultMode("copilot")).toBe(COPILOT_MODES[0].value);
   });
 });
 
@@ -123,8 +141,13 @@ describe("static model/mode lists", () => {
     }
   });
 
-  it("has at least 2 modes for each backend", () => {
+  it("has copilot models with at least one entry", () => {
+    expect(COPILOT_MODELS.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("has at least 2 modes for each backend (except copilot which is single-mode)", () => {
     expect(CLAUDE_MODES.length).toBeGreaterThanOrEqual(2);
     expect(CODEX_MODES.length).toBeGreaterThanOrEqual(2);
+    expect(COPILOT_MODES.length).toBeGreaterThanOrEqual(1);
   });
 });

@@ -188,13 +188,14 @@ export interface CreateSessionOpts {
   cwd?: string;
   claudeBinary?: string;
   codexBinary?: string;
+  copilotBinary?: string;
   codexInternetAccess?: boolean;
   allowedTools?: string[];
   envSlug?: string;
   branch?: string;
   createBranch?: boolean;
   useWorktree?: boolean;
-  backend?: "claude" | "codex";
+  backend?: "claude" | "codex" | "copilot";
   container?: ContainerCreateOpts;
 }
 

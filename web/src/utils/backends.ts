@@ -64,20 +64,40 @@ export const CODEX_MODES: ModeOption[] = [
   { value: "plan", label: "Suggest" },
 ];
 
+// ─── Copilot constants ────────────────────────────────────────────────────────
+
+/** GitHub Copilot CLI uses its own model selection internally; no API model choice. */
+export const COPILOT_MODELS: ModelOption[] = [
+  { value: "default", label: "Default", icon: "\u{1F916}" }, // 🤖
+];
+
+/** Copilot CLI runs with --allow-all-tools by default (non-interactive mode). */
+export const COPILOT_MODES: ModeOption[] = [
+  { value: "bypassPermissions", label: "Auto (all tools)" },
+];
+
 // ─── Getters ─────────────────────────────────────────────────────────────────
 
 export function getModelsForBackend(backend: BackendType): ModelOption[] {
-  return backend === "codex" ? CODEX_MODELS : CLAUDE_MODELS;
+  if (backend === "codex") return CODEX_MODELS;
+  if (backend === "copilot") return COPILOT_MODELS;
+  return CLAUDE_MODELS;
 }
 
 export function getModesForBackend(backend: BackendType): ModeOption[] {
-  return backend === "codex" ? CODEX_MODES : CLAUDE_MODES;
+  if (backend === "codex") return CODEX_MODES;
+  if (backend === "copilot") return COPILOT_MODES;
+  return CLAUDE_MODES;
 }
 
 export function getDefaultModel(backend: BackendType): string {
-  return backend === "codex" ? CODEX_MODELS[0].value : CLAUDE_MODELS[0].value;
+  if (backend === "codex") return CODEX_MODELS[0].value;
+  if (backend === "copilot") return COPILOT_MODELS[0].value;
+  return CLAUDE_MODELS[0].value;
 }
 
 export function getDefaultMode(backend: BackendType): string {
-  return backend === "codex" ? CODEX_MODES[0].value : CLAUDE_MODES[0].value;
+  if (backend === "codex") return CODEX_MODES[0].value;
+  if (backend === "copilot") return COPILOT_MODES[0].value;
+  return CLAUDE_MODES[0].value;
 }

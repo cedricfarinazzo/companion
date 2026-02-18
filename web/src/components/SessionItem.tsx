@@ -72,7 +72,9 @@ export function SessionItem({
   // Backend pill colors
   const pillColors = s.backendType === "codex"
     ? "text-blue-500 bg-blue-500/10"
-    : "text-[#5BA8A0] bg-[#5BA8A0]/10";
+    : s.backendType === "copilot"
+      ? "text-purple-500 bg-purple-500/10"
+      : "text-[#5BA8A0] bg-[#5BA8A0]/10";
 
   return (
     <div className={`relative group ${archived ? "opacity-50" : ""}`}>
@@ -93,7 +95,9 @@ export function SessionItem({
           className={`absolute left-0 top-2 bottom-2 w-[2px] rounded-full ${
             s.backendType === "codex"
               ? "bg-blue-500"
-              : "bg-[#5BA8A0]"
+              : s.backendType === "copilot"
+                ? "bg-purple-500"
+                : "bg-[#5BA8A0]"
           } ${isActive ? "opacity-100" : "opacity-40 group-hover:opacity-70"} transition-opacity`}
         />
 
@@ -143,7 +147,7 @@ export function SessionItem({
                     {label}
                   </span>
                   <span className={`text-[9px] font-medium px-1.5 rounded-full leading-[16px] shrink-0 ${pillColors}`}>
-                    {s.backendType === "codex" ? "Codex" : "Claude"}
+                    {s.backendType === "codex" ? "Codex" : s.backendType === "copilot" ? "Copilot" : "Claude"}
                   </span>
                   {s.isContainerized && (
                     <span className="text-[9px] font-medium px-1.5 rounded-full leading-[16px] shrink-0 text-blue-400 bg-blue-500/10">

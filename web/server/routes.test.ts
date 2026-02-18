@@ -1477,10 +1477,11 @@ index 0000000..e69de29
 
 describe("GET /api/backends", () => {
   it("returns both backends with availability status", async () => {
-    // resolveBinary returns a path for both binaries
+    // resolveBinary returns a path for both binaries (claude, codex, copilot)
     mockResolveBinary
       .mockReturnValueOnce("/usr/bin/claude")
-      .mockReturnValueOnce("/usr/bin/codex");
+      .mockReturnValueOnce("/usr/bin/codex")
+      .mockReturnValueOnce(null); // copilot not installed
 
     const res = await app.request("/api/backends", { method: "GET" });
 
@@ -1489,12 +1490,14 @@ describe("GET /api/backends", () => {
     expect(json).toEqual([
       { id: "claude", name: "Claude Code", available: true },
       { id: "codex", name: "Codex", available: true },
+      { id: "copilot", name: "GitHub Copilot", available: false },
     ]);
   });
 
   it("marks backends as unavailable when binary is not found", async () => {
-    // resolveBinary returns null for both
+    // resolveBinary returns null for all three
     mockResolveBinary
+      .mockReturnValueOnce(null)
       .mockReturnValueOnce(null)
       .mockReturnValueOnce(null);
 
@@ -1505,13 +1508,15 @@ describe("GET /api/backends", () => {
     expect(json).toEqual([
       { id: "claude", name: "Claude Code", available: false },
       { id: "codex", name: "Codex", available: false },
+      { id: "copilot", name: "GitHub Copilot", available: false },
     ]);
   });
 
   it("handles mixed availability", async () => {
     mockResolveBinary
       .mockReturnValueOnce("/usr/bin/claude") // claude found
-      .mockReturnValueOnce(null); // codex not found
+      .mockReturnValueOnce(null) // codex not found
+      .mockReturnValueOnce("/usr/bin/copilot"); // copilot found
 
     const res = await app.request("/api/backends", { method: "GET" });
 
@@ -1519,6 +1524,7 @@ describe("GET /api/backends", () => {
     const json = await res.json();
     expect(json[0].available).toBe(true);
     expect(json[1].available).toBe(false);
+    expect(json[2].available).toBe(true);
   });
 });
 

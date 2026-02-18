@@ -73,6 +73,11 @@ launcher.onCodexAdapterCreated((sessionId, adapter) => {
   wsBridge.attachCodexAdapter(sessionId, adapter);
 });
 
+// When a Copilot adapter is created, attach it to the WsBridge
+launcher.onCopilotAdapterCreated((sessionId, adapter) => {
+  wsBridge.attachCopilotAdapter(sessionId, adapter);
+});
+
 // When a CLI process exits, notify the assistant manager for auto-relaunch
 launcher.onSessionExited((sessionId) => {
   assistantManager.handleCliExit(sessionId);

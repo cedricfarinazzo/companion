@@ -96,7 +96,7 @@ export function createRoutes(
     const body = await c.req.json().catch(() => ({}));
     try {
       const backend = body.backend ?? "claude";
-      if (backend !== "claude" && backend !== "codex") {
+      if (backend !== "claude" && backend !== "codex" && backend !== "copilot") {
         return c.json({ error: `Invalid backend: ${String(backend)}` }, 400);
       }
 
@@ -188,6 +188,13 @@ export function createRoutes(
           error:
             "Containerized Codex requires auth available inside the container. " +
             "Set OPENAI_API_KEY in the selected environment, or ensure ~/.codex/auth.json exists on the host.",
+        }, 400);
+      }
+      if (effectiveImage && backend === "copilot") {
+        return c.json({
+          error:
+            "GitHub Copilot sessions do not support Docker containers. " +
+            "Please use the host mode (no container image) for Copilot sessions.",
         }, 400);
       }
 
@@ -311,6 +318,7 @@ export function createRoutes(
         cwd,
         claudeBinary: body.claudeBinary,
         codexBinary: body.codexBinary,
+        copilotBinary: body.copilotBinary,
         codexInternetAccess: backend === "codex" && body.codexInternetAccess === true,
         codexSandbox: backend === "codex" && body.codexInternetAccess === true
           ? "danger-full-access"
@@ -370,7 +378,7 @@ export function createRoutes(
     return streamSSE(c, async (stream) => {
       try {
         const backend = body.backend ?? "claude";
-        if (backend !== "claude" && backend !== "codex") {
+        if (backend !== "claude" && backend !== "codex" && backend !== "copilot") {
           await stream.writeSSE({
             event: "error",
             data: JSON.stringify({ error: `Invalid backend: ${String(backend)}` }),
@@ -479,6 +487,17 @@ export function createRoutes(
               error:
                 "Containerized Codex requires auth available inside the container. " +
                 "Set OPENAI_API_KEY in the selected environment, or ensure ~/.codex/auth.json exists on the host.",
+            }),
+          });
+          return;
+        }
+        if (effectiveImage && backend === "copilot") {
+          await stream.writeSSE({
+            event: "error",
+            data: JSON.stringify({
+              error:
+                "GitHub Copilot sessions do not support Docker containers. " +
+                "Please use the host mode (no container image) for Copilot sessions.",
             }),
           });
           return;
@@ -634,7 +653,8 @@ export function createRoutes(
         }
 
         // --- Step: Launch CLI ---
-        await emitProgress(stream, "launching_cli", "Launching Claude Code...", "in_progress");
+        const launchLabel = backend === "copilot" ? "GitHub Copilot" : backend === "codex" ? "Codex" : "Claude Code";
+        await emitProgress(stream, "launching_cli", `Launching ${launchLabel}...`, "in_progress");
 
         const session = launcher.launch({
           model: body.model,
@@ -642,6 +662,7 @@ export function createRoutes(
           cwd,
           claudeBinary: body.claudeBinary,
           codexBinary: body.codexBinary,
+          copilotBinary: body.copilotBinary,
           codexInternetAccess: backend === "codex" && body.codexInternetAccess === true,
           codexSandbox: backend === "codex" && body.codexInternetAccess === true
             ? "danger-full-access"
@@ -837,6 +858,7 @@ export function createRoutes(
 
     backends.push({ id: "claude", name: "Claude Code", available: resolveBinary("claude") !== null });
     backends.push({ id: "codex", name: "Codex", available: resolveBinary("codex") !== null });
+    backends.push({ id: "copilot", name: "GitHub Copilot", available: resolveBinary("copilot") !== null });
 
     return c.json(backends);
   });
