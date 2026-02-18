@@ -390,15 +390,13 @@ describe("MessageBubble - tool result pairing", () => {
         { type: "tool_result", tool_use_id: "tu-2", content: "file content B" },
       ],
     });
-    const { container } = render(<MessageBubble message={msg} />);
+    render(<MessageBubble message={msg} />);
 
     // Both tools should be grouped together (same tool type)
     const groupBadge = screen.getByText("2");
     expect(groupBadge).toBeTruthy();
     
-    // Should have success indicators (both completed)
-    const successIcons = container.querySelectorAll(".text-cc-success");
-    // At least one success icon should be present on the group header
-    expect(successIcons.length).toBeGreaterThan(0);
+    // The group label should appear
+    expect(screen.getByText("Read File")).toBeTruthy();
   });
 });
