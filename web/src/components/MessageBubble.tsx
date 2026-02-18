@@ -279,12 +279,23 @@ function ContentBlockRenderer({ block }: { block: ContentBlock }) {
     const content = typeof block.content === "string" ? block.content : JSON.stringify(block.content);
     const isError = block.is_error;
     return (
-      <div className={`text-xs font-mono-code rounded-lg px-3 py-2 border ${
-        isError
-          ? "bg-cc-error/5 border-cc-error/20 text-cc-error"
-          : "bg-cc-card border-cc-border text-cc-muted"
-      } max-h-40 overflow-y-auto whitespace-pre-wrap`}>
-        {content}
+      <div className={`rounded-lg border overflow-hidden ${
+        isError ? "border-cc-error/40" : "border-cc-border"
+      }`}>
+        <div className={`px-3 py-1.5 text-xs font-medium border-b ${
+          isError 
+            ? "bg-cc-error/10 border-cc-error/20 text-cc-error" 
+            : "bg-cc-card/50 border-cc-border text-cc-fg"
+        }`}>
+          {isError ? "⚠️ Tool Error" : "✓ Tool Output"}
+        </div>
+        <div className={`text-xs font-mono-code px-3 py-2 ${
+          isError
+            ? "bg-cc-error/5 text-cc-error"
+            : "bg-cc-card text-cc-muted"
+        } max-h-40 overflow-y-auto whitespace-pre-wrap`}>
+          {content}
+        </div>
       </div>
     );
   }

@@ -180,6 +180,8 @@ describe("MessageBubble - assistant messages", () => {
     render(<MessageBubble message={msg} />);
 
     expect(screen.getByText("Command output: success")).toBeTruthy();
+    // Should have "Tool Output" label
+    expect(screen.getByText("✓ Tool Output")).toBeTruthy();
   });
 
   it("renders tool_result blocks with JSON content", () => {
@@ -196,6 +198,8 @@ describe("MessageBubble - assistant messages", () => {
     // The JSON.stringify of the content should be rendered
     const rendered = screen.getByText(JSON.stringify(jsonContent));
     expect(rendered).toBeTruthy();
+    // Should have "Tool Output" label
+    expect(screen.getByText("✓ Tool Output")).toBeTruthy();
   });
 
   it("renders tool_result error blocks with error styling", () => {
@@ -209,6 +213,8 @@ describe("MessageBubble - assistant messages", () => {
     const { container } = render(<MessageBubble message={msg} />);
 
     expect(screen.getByText("Error: file not found")).toBeTruthy();
+    // Should have "Tool Error" label
+    expect(screen.getByText("⚠️ Tool Error")).toBeTruthy();
     // Check for error styling class
     const errorDiv = container.querySelector(".text-cc-error");
     expect(errorDiv).toBeTruthy();

@@ -302,6 +302,21 @@ const MSG_TOOL_PENDING: ChatMessage = {
   timestamp: Date.now() - 5000,
 };
 
+// Orphaned tool result (result in separate message from tool_use)
+const MSG_TOOL_RESULT_ORPHANED: ChatMessage = {
+  id: "msg-9",
+  role: "assistant",
+  content: "",
+  contentBlocks: [
+    {
+      type: "tool_result",
+      tool_use_id: "tu-4",
+      content: "Build succeeded in 2.3s\n✓ compiled 156 files\n✓ build completed",
+    },
+  ],
+  timestamp: Date.now() - 3000,
+};
+
 // Tasks
 const MOCK_TASKS: TaskItem[] = [
   { id: "1", subject: "Create JWT utility module", description: "", status: "completed" },
@@ -510,6 +525,7 @@ export function Playground() {
       MSG_ASSISTANT_TOOLS,
       MSG_TOOL_ERROR,
       MSG_TOOL_PENDING,
+      MSG_TOOL_RESULT_ORPHANED,
     ]);
     store.setStreaming(sessionId, "I'm updating tests and then I'll run the full suite.");
     store.setStreamingStats(sessionId, { startedAt: Date.now() - 12000, outputTokens: 1200 });
@@ -650,6 +666,9 @@ export function Playground() {
             </Card>
             <Card label="Pending tool (no result yet)">
               <MessageBubble message={MSG_TOOL_PENDING} />
+            </Card>
+            <Card label="Tool output (orphaned result in separate message)">
+              <MessageBubble message={MSG_TOOL_RESULT_ORPHANED} />
             </Card>
             <Card label="System message">
               <MessageBubble message={MSG_SYSTEM} />
