@@ -71,16 +71,16 @@ The Companion supports [GitHub Copilot CLI](https://docs.github.com/en/copilot/h
 
 ### How it works
 
-When you create a Copilot session, The Companion runs:
+The Companion runs ONE persistent `copilot` process per session:
 ```bash
-copilot --resume --allow-all-tools --silent --prompt "<your message>"
+copilot --allow-all-tools --silent
 ```
 
-Each user message spawns a new short-lived `copilot` process. The `--resume` flag reuses the most recent session for conversation continuity. Responses are captured from stdout and displayed in the chat UI.
+The process stays alive for the entire session. Each user message is written to its stdin; the response is read from stdout using an idle-timeout (3 s of silence = response complete). Because the process never exits between turns, Copilot maintains full conversation context natively — no session-file tricks required.
 
 ### Limitations
 
-- **No streaming mid-response**: The full response is buffered and displayed when the process exits (Copilot CLI does not expose a streaming API for programmatic use).
+- **No mid-response streaming**: The full response is buffered and displayed when Copilot finishes writing (indicated by 3 seconds of stdout silence).
 - **No tool permission UI**: `--allow-all-tools` is always passed, bypassing permission prompts. All tool use is approved automatically.
 - **No model selection**: The Copilot CLI uses its own model routing; you cannot choose a specific model from the UI.
 - **No Docker container support**: Copilot sessions run on the host only.

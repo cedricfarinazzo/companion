@@ -716,8 +716,9 @@ export class CliLauncher {
 
   /**
    * Spawn a Copilot CLI adapter for a session.
-   * The Copilot CLI uses programmatic mode (-p flag) for each user turn,
-   * and --resume to continue the conversation across turns.
+   * A single persistent `copilot --allow-all-tools --silent` process is kept
+   * alive for the lifetime of the session; conversation context is maintained
+   * naturally because the process never exits between turns.
    */
   private spawnCopilot(sessionId: string, info: SdkSessionInfo, options: LaunchOptions & { resume?: boolean }): void {
     let binary = options.copilotBinary || "copilot";
@@ -737,11 +738,13 @@ export class CliLauncher {
     const adapter = new CopilotAdapter(sessionId, {
       cwd: info.cwd,
       binary,
+      // Pass resume only when explicitly requested (server-restart recovery).
+      // Normal sessions don't need it — the persistent process maintains context.
       resume: options.resume === true,
       env: options.env,
     });
 
-    // Mark as connected immediately (adapter manages its own processes)
+    // Mark as connected immediately (adapter manages its own process)
     info.state = "connected";
 
     // Notify the WsBridge to attach this adapter

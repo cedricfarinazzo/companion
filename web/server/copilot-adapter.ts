@@ -2,21 +2,22 @@
  * Copilot CLI Adapter
  *
  * Integrates the GitHub Copilot CLI (`copilot`) as a backend for The Companion.
- * 
- * The Copilot CLI is an interactive terminal tool. For programmatic use, it
- * supports `-p <prompt>` (execute a prompt and exit) and `-s` (silent mode:
- * output only the agent response). Session continuity is achieved via
- * `--resume` which resumes the most recent session.
  *
- * Limitations vs Claude Code:
- * - No streaming mid-response: the full response is buffered and emitted when
- *   the process exits (unless --stream on is used, but output format varies).
- * - Each user turn spawns a new short-lived process.
- * - No tool permission approval flow in the web UI (--allow-all-tools is used).
- * - No model switching at runtime.
+ * Architecture: ONE persistent `copilot --allow-all-tools --silent` process is kept
+ * alive for the lifetime of the session, with stdin/stdout pipes.  User messages are
+ * written to stdin; responses are collected from stdout using an idle-timeout
+ * (RESPONSE_IDLE_MS of silence after the last chunk = response complete).
+ * Because the process never exits between turns, Copilot maintains full conversation
+ * context natively — no `--resume` session-file tricks required.
  *
  * Install: npm install -g @github/copilot
- * Auth: GH_TOKEN or GITHUB_TOKEN env var, or `copilot /login`
+ * Auth:    GH_TOKEN or GITHUB_TOKEN env var, or run `copilot /login` once.
+ *
+ * Limitations vs Claude Code:
+ * - No streaming mid-response: response text is buffered and emitted in one shot.
+ * - No tool permission approval flow (--allow-all-tools bypasses all prompts).
+ * - No model switching at runtime.
+ * - No Docker container support (runs on host only).
  */
 
 import { randomUUID } from "node:crypto";
@@ -33,10 +34,43 @@ export interface CopilotAdapterOptions {
   cwd?: string;
   /** Path to the copilot binary (default: "copilot") */
   binary?: string;
-  /** Whether to resume the most recent Copilot session */
+  /** Whether to pass --resume when starting the process (for server-restart recovery). */
   resume?: boolean;
   /** Extra env vars to pass to the copilot process */
   env?: Record<string, string>;
+}
+
+// ─── Idle-timeout response detector ──────────────────────────────────────────
+
+/**
+ * Milliseconds of stdout silence after which we consider the current response
+ * complete and ready to emit.  3 s is generous enough for long code responses
+ * while still feeling snappy on short answers.
+ */
+const RESPONSE_IDLE_MS = 3_000;
+
+/**
+ * Hard upper bound on how long we wait for ANY output after sending a prompt.
+ * If Copilot is still "thinking" after 5 minutes, we give up and emit an error.
+ */
+const RESPONSE_MAX_MS = 5 * 60_000;
+
+/**
+ * Maximum wait for startup output before we consider the process ready.
+ * If the trust/login prompt takes longer than this, we bail.
+ */
+const STARTUP_MAX_MS = 15_000;
+
+// ─── Strip ANSI escape codes ─────────────────────────────────────────────────
+
+// Covers CSI sequences, OSC, and carriage returns that pollute the response text.
+const ANSI_PATTERN = /(\x9b|\x1b\[)[0-9;]*[a-zA-Z]|\x1b[^[]/g;
+
+function stripAnsi(raw: string): string {
+  return raw
+    .replace(ANSI_PATTERN, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n");
 }
 
 // ─── Copilot Adapter ──────────────────────────────────────────────────────────
@@ -51,10 +85,9 @@ export class CopilotAdapter {
 
   /** Whether the adapter is active (not permanently disconnected). */
   private _connected = true;
-  /** Currently running copilot subprocess (one per user turn). */
-  private currentProc: Subprocess | null = null;
-  /** Whether any turn has been completed (so we can use --resume). */
-  private hasPriorSession = false;
+  /** The single long-running copilot process. */
+  private proc: Subprocess | null = null;
+
   /** Queue of user messages waiting for the current turn to complete. */
   private pendingUserMessages: string[] = [];
   /** Whether a turn is currently in progress. */
@@ -62,49 +95,21 @@ export class CopilotAdapter {
   /** Buffer for pending outgoing messages during adapter startup. */
   private pendingOutgoing: BrowserOutgoingMessage[] = [];
 
+  // ── Stdout accumulator shared between reader loop and response detector ──
+
+  /** Raw text chunks arriving from stdout, consumed by the response waiter. */
+  private stdoutChunks: string[] = [];
+  /** Notify the current response waiter that a new chunk arrived. */
+  private onChunk: (() => void) | null = null;
+
   constructor(sessionId: string, options: CopilotAdapterOptions = {}) {
     this.sessionId = sessionId;
     this.options = options;
-    this.hasPriorSession = options.resume === true;
 
-    // Emit initial session state so the browser knows we're connected
-    // Use a microtask so callers can register callbacks first
-    Promise.resolve().then(() => {
-      const state: SessionState = {
-        session_id: this.sessionId,
-        backend_type: "copilot",
-        model: "",
-        cwd: this.options.cwd || "",
-        tools: [],
-        permissionMode: "bypassPermissions",
-        claude_code_version: "",
-        mcp_servers: [],
-        agents: [],
-        slash_commands: [],
-        skills: [],
-        total_cost_usd: 0,
-        num_turns: 0,
-        context_used_percent: 0,
-        is_compacting: false,
-        git_branch: "",
-        is_worktree: false,
-        is_containerized: false,
-        repo_root: "",
-        git_ahead: 0,
-        git_behind: 0,
-        total_lines_added: 0,
-        total_lines_removed: 0,
-      };
-      this.emit({ type: "session_init", session: state });
-      this.sessionMetaCb?.({ cwd: this.options.cwd });
-
-      // Flush any messages queued before callbacks were registered
-      if (this.pendingOutgoing.length > 0) {
-        const queued = this.pendingOutgoing.splice(0);
-        for (const msg of queued) {
-          this.dispatchOutgoing(msg);
-        }
-      }
+    // Start the persistent process asynchronously so callers can register
+    // callbacks before we emit session_init.
+    this.startProcess().catch((err) => {
+      console.error(`[copilot-adapter] Startup failed for session ${sessionId}:`, err);
     });
   }
 
@@ -133,21 +138,257 @@ export class CopilotAdapter {
 
   async disconnect(): Promise<void> {
     this._connected = false;
-    if (this.currentProc) {
+    if (this.proc) {
       try {
-        this.currentProc.kill("SIGTERM");
+        this.proc.kill("SIGTERM");
         await Promise.race([
-          this.currentProc.exited,
+          this.proc.exited,
           new Promise((r) => setTimeout(r, 3000)),
         ]);
       } catch {}
-      this.currentProc = null;
+      this.proc = null;
+    }
+  }
+
+  // ── Startup ─────────────────────────────────────────────────────────────────
+
+  private async startProcess(): Promise<void> {
+    const binary = this.options.binary || "copilot";
+
+    // Persistent process flags:
+    //   --allow-all-tools  bypass per-tool permission prompts
+    //   --silent           suppress UI noise; output only the assistant response
+    // --resume is passed when recovering a server-restart (session already has history)
+    const args: string[] = ["--allow-all-tools", "--silent"];
+    if (this.options.resume) {
+      args.unshift("--resume");
+    }
+
+    const spawnEnv: Record<string, string | undefined> = {
+      ...process.env,
+      ...this.options.env,
+      // Suppress colour escape codes — we strip them anyway, but this keeps
+      // the output cleaner and avoids terminal-detection branches in Copilot.
+      NO_COLOR: "1",
+      TERM: "dumb",
+    };
+
+    console.log(`[copilot-adapter] Starting persistent Copilot process for session ${this.sessionId}: copilot ${args.join(" ")}`);
+
+    let proc: Subprocess;
+    try {
+      proc = Bun.spawn([binary, ...args], {
+        cwd: this.options.cwd,
+        env: spawnEnv,
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[copilot-adapter] Failed to spawn copilot: ${msg}`);
+      const errMsg = `Failed to launch Copilot CLI: ${msg}. Make sure "copilot" is installed (npm install -g @github/copilot).`;
+      this._connected = false;
+      // Emit via microtask so that the caller has time to register onBrowserMessage
+      await Promise.resolve();
+      this.emit({ type: "error", message: errMsg });
+      this.disconnectCb?.();
+      return;
+    }
+
+    this.proc = proc;
+
+    // ── Start the continuous stdout reader loop ──
+    this.startStdoutLoop(proc);
+
+    // ── Watch for process exit ──
+    proc.exited.then((code) => {
+      if (this.proc !== proc) return; // already replaced / disconnected
+      console.log(`[copilot-adapter] Copilot process exited (code=${code}) for session ${this.sessionId}`);
+      this.proc = null;
+      if (this._connected) {
+        this._connected = false;
+        this.disconnectCb?.();
+      }
+    });
+
+    // ── Read startup output ──
+    // Copilot may print a trust-directory prompt or a login prompt before it
+    // is ready. We read for up to STARTUP_MAX_MS to detect these cases.
+    const startupText = await this.readUntilIdle(STARTUP_MAX_MS, 1500);
+    const cleanStartup = stripAnsi(startupText);
+
+    if (cleanStartup.toLowerCase().includes("not logged in") || cleanStartup.toLowerCase().includes("login")) {
+      const errMsg = "Copilot CLI is not authenticated. Run `copilot /login` in your terminal, or set GH_TOKEN / GITHUB_TOKEN.";
+      console.error(`[copilot-adapter] ${errMsg}`);
+      this._connected = false;
+      await Promise.resolve();
+      this.emit({ type: "error", message: errMsg });
+      this.disconnectCb?.();
+      return;
+    }
+
+    if (cleanStartup.toLowerCase().includes("trust")) {
+      // Send "1" to approve: "Yes, proceed (this session only)"
+      console.log(`[copilot-adapter] Responding to trust prompt for session ${this.sessionId}`);
+      await this.writeToStdin("1\n");
+      // Drain follow-up output (welcome message etc.)
+      await this.readUntilIdle(STARTUP_MAX_MS, 2000);
+    }
+
+    // ── Emit session_init ──
+    const state: SessionState = {
+      session_id: this.sessionId,
+      backend_type: "copilot",
+      model: "",
+      cwd: this.options.cwd || "",
+      tools: [],
+      permissionMode: "bypassPermissions",
+      claude_code_version: "",
+      mcp_servers: [],
+      agents: [],
+      slash_commands: [],
+      skills: [],
+      total_cost_usd: 0,
+      num_turns: 0,
+      context_used_percent: 0,
+      is_compacting: false,
+      git_branch: "",
+      is_worktree: false,
+      is_containerized: false,
+      repo_root: "",
+      git_ahead: 0,
+      git_behind: 0,
+      total_lines_added: 0,
+      total_lines_removed: 0,
+    };
+    this.emit({ type: "session_init", session: state });
+    this.sessionMetaCb?.({ cwd: this.options.cwd });
+
+    // Flush any messages that arrived while we were starting up
+    if (this.pendingOutgoing.length > 0) {
+      const queued = this.pendingOutgoing.splice(0);
+      for (const msg of queued) {
+        this.dispatchOutgoing(msg);
+      }
+    }
+  }
+
+  // ── Stdout reader loop ───────────────────────────────────────────────────────
+
+  private startStdoutLoop(proc: Subprocess): void {
+    const rawStdout = proc.stdout;
+    const rawStderr = proc.stderr;
+    const decoder = new TextDecoder();
+    const errDecoder = new TextDecoder();
+
+    // Stdout: push chunks into stdoutChunks and wake any pending waiter
+    if (rawStdout && typeof rawStdout !== "number") {
+      (async () => {
+        const reader = rawStdout.getReader();
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            this.stdoutChunks.push(decoder.decode(value, { stream: true }));
+            this.onChunk?.();
+          }
+        } catch {
+          // stream closed — process exited
+        }
+      })();
+    }
+
+    // Stderr: log for debugging
+    if (rawStderr && typeof rawStderr !== "number") {
+      (async () => {
+        const reader = rawStderr.getReader();
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const chunk = errDecoder.decode(value, { stream: true });
+            if (chunk.trim()) {
+              console.error(`[copilot-adapter:${this.sessionId}:stderr] ${chunk.trimEnd()}`);
+            }
+          }
+        } catch {
+          // stream closed
+        }
+      })();
+    }
+  }
+
+  // ── Idle-based response collection ──────────────────────────────────────────
+
+  /**
+   * Collect stdout text until either:
+   *   - `idleMs` have passed with no new chunks, OR
+   *   - `maxMs` have passed since we started waiting (hard cap)
+   *
+   * Returns everything accumulated so far.
+   */
+  private readUntilIdle(maxMs: number, idleMs: number): Promise<string> {
+    return new Promise((resolve) => {
+      let accumulated = "";
+      let idleTimer: ReturnType<typeof setTimeout>;
+      const maxTimer = setTimeout(() => {
+        clearTimeout(idleTimer);
+        this.onChunk = null;
+        resolve(accumulated);
+      }, maxMs);
+
+      const resetIdle = () => {
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => {
+          clearTimeout(maxTimer);
+          this.onChunk = null;
+          resolve(accumulated);
+        }, idleMs);
+      };
+
+      // Drain any chunks already in the buffer
+      while (this.stdoutChunks.length > 0) {
+        accumulated += this.stdoutChunks.shift()!;
+      }
+      // If we already have content, start the idle timer immediately
+      if (accumulated.length > 0) {
+        resetIdle();
+      } else {
+        resetIdle(); // also start timer (with empty buffer) to handle fast resolve
+      }
+
+      // Register for future chunks
+      this.onChunk = () => {
+        while (this.stdoutChunks.length > 0) {
+          accumulated += this.stdoutChunks.shift()!;
+        }
+        resetIdle();
+      };
+    });
+  }
+
+  // ── stdin writer ─────────────────────────────────────────────────────────────
+
+  private writeToStdin(text: string): void {
+    if (!this.proc) return;
+    const rawStdin = this.proc.stdin;
+    if (!rawStdin || typeof rawStdin === "number") return;
+    try {
+      (rawStdin as { write(data: Uint8Array): number }).write(new TextEncoder().encode(text));
+    } catch (err) {
+      console.error(`[copilot-adapter] stdin write failed:`, err);
     }
   }
 
   // ── Internal ────────────────────────────────────────────────────────────────
 
   private dispatchOutgoing(msg: BrowserOutgoingMessage): boolean {
+    if (!this.proc && msg.type === "user_message") {
+      // Process not yet started — queue for after startup
+      this.pendingOutgoing.push(msg);
+      return true;
+    }
     switch (msg.type) {
       case "user_message":
         this.handleUserMessage(msg.content);
@@ -155,23 +396,21 @@ export class CopilotAdapter {
       case "interrupt":
         this.handleInterrupt();
         return true;
-      // Silently ignore unsupported message types
       default:
         return false;
     }
   }
 
   private handleInterrupt(): void {
-    if (this.currentProc) {
+    if (this.proc) {
       try {
-        this.currentProc.kill("SIGINT");
+        this.proc.kill("SIGINT");
       } catch {}
     }
   }
 
   private handleUserMessage(content: string): void {
     if (this.turnInProgress) {
-      // Queue if a turn is already running
       this.pendingUserMessages.push(content);
       return;
     }
@@ -179,149 +418,33 @@ export class CopilotAdapter {
   }
 
   private async runTurn(prompt: string): Promise<void> {
-    if (!this._connected) return;
+    if (!this._connected || !this.proc) return;
     this.turnInProgress = true;
 
-    const binary = this.options.binary || "copilot";
-
-    // Build args: programmatic mode with silent output
-    // --allow-all-tools: bypass permission prompts (required for non-interactive use)
-    // -s / --silent: output only the agent response, no usage stats
-    // -p: execute the prompt and exit
-    const args: string[] = [];
-    if (this.hasPriorSession) {
-      // Resume the most recent session so context is preserved across turns
-      args.push("--resume");
-    }
-    // Suppress the interactive banner which would block programmatic use
-    // Note: --no-color is not documented but --silent already suppresses most UI noise
-    args.push(
-      "--allow-all-tools",
-      "--silent",
-      "--prompt", prompt,
-    );
-
-    const spawnEnv: Record<string, string | undefined> = {
-      ...process.env,
-      ...this.options.env,
-      // Ensure no TTY tricks from the parent environment
-      TERM: "dumb",
-    };
-
-    console.log(`[copilot-adapter] Running turn for session ${this.sessionId}: copilot ${args.slice(0, -1).join(" ")} --prompt "<...>"`);
-
-    let proc: Subprocess;
-    try {
-      proc = Bun.spawn([binary, ...args], {
-        cwd: this.options.cwd,
-        env: spawnEnv,
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[copilot-adapter] Failed to spawn copilot: ${msg}`);
-      this.emit({
-        type: "error",
-        message: `Failed to launch Copilot CLI: ${msg}. Make sure "copilot" is installed (npm install -g @github/copilot).`,
-      });
-      this.turnInProgress = false;
-      this._connected = false;
-      this.disconnectCb?.();
-      return;
-    }
-
-    this.currentProc = proc;
+    console.log(`[copilot-adapter] Sending turn to Copilot for session ${this.sessionId}: ${prompt.slice(0, 80)}${prompt.length > 80 ? "…" : ""}`);
 
     // Emit "running" status to browser
     this.emit({ type: "status_change", status: "running" });
 
-    // Accumulate stdout for the complete response
-    let responseText = "";
-    let errorText = "";
+    // Write the prompt to the persistent process's stdin, followed by a newline
+    // so Copilot treats it as a submitted message.
+    this.writeToStdin(prompt + "\n");
 
-    // Read stdout/stderr - Bun subprocess streams may be ReadableStream or number (when inherited)
-    const rawStdout = proc.stdout;
-    const rawStderr = proc.stderr;
-    const stdoutReader = rawStdout && typeof rawStdout !== "number" ? rawStdout.getReader() : null;
-    const stderrReader = rawStderr && typeof rawStderr !== "number" ? rawStderr.getReader() : null;
-    const decoder = new TextDecoder();
+    // Collect the response using idle-based timeout
+    const rawResponse = await this.readUntilIdle(RESPONSE_MAX_MS, RESPONSE_IDLE_MS);
+    const responseText = stripAnsi(rawResponse).trim();
 
-    // Stream stdout to responseText
-    const stdoutDone = (async () => {
-      if (!stdoutReader) return;
-      try {
-        while (true) {
-          const { done, value } = await stdoutReader.read();
-          if (done) break;
-          responseText += decoder.decode(value, { stream: true });
-        }
-      } catch {
-        // stream closed
+    if (!responseText) {
+      // If no response came through, the process may have crashed
+      if (!this.proc) {
+        this.emit({ type: "error", message: "Copilot process exited unexpectedly while waiting for a response." });
       }
-    })();
-
-    // Stream stderr to errorText (for debugging)
-    const stderrDone = (async () => {
-      if (!stderrReader) return;
-      const errDecoder = new TextDecoder();
-      try {
-        while (true) {
-          const { done, value } = await stderrReader.read();
-          if (done) break;
-          const chunk = errDecoder.decode(value, { stream: true });
-          errorText += chunk;
-          if (chunk.trim()) {
-            console.error(`[copilot-adapter:${this.sessionId}:stderr] ${chunk.trimEnd()}`);
-          }
-        }
-      } catch {
-        // stream closed
-      }
-    })();
-
-    const exitCode = await proc.exited;
-    await Promise.all([stdoutDone, stderrDone]);
-    this.currentProc = null;
-
-    // Trim the accumulated response
-    responseText = responseText.trim();
-
-    if (exitCode !== 0 || !responseText) {
-      // Detect common errors and provide helpful messages
-      const combinedOutput = (responseText + errorText).toLowerCase();
-      let errorMessage: string;
-
-      if (combinedOutput.includes("not logged in") || combinedOutput.includes("login") || combinedOutput.includes("authentication")) {
-        errorMessage = "Copilot CLI is not authenticated. Run `copilot /login` in your terminal to authenticate, or set the GH_TOKEN / GITHUB_TOKEN environment variable.";
-      } else if (exitCode === 127 || combinedOutput.includes("command not found") || combinedOutput.includes("not found")) {
-        errorMessage = "Copilot CLI is not installed. Install it with: npm install -g @github/copilot";
-      } else if (!responseText && errorText) {
-        errorMessage = `Copilot CLI error (exit ${exitCode}): ${errorText.trim().slice(0, 500)}`;
-      } else if (!responseText) {
-        errorMessage = `Copilot CLI exited with code ${exitCode} and produced no output.`;
-      } else {
-        // We have some text even on non-zero exit — use it
-        errorMessage = "";
-      }
-
-      if (errorMessage) {
-        console.error(`[copilot-adapter] Turn failed for session ${this.sessionId}: ${errorMessage}`);
-        this.emit({ type: "error", message: errorMessage });
-        this.emit({ type: "status_change", status: "idle" });
-        this.turnInProgress = false;
-
-        // Drain pending messages
-        const next = this.pendingUserMessages.shift();
-        if (next && this._connected) {
-          this.runTurn(next);
-        }
-        return;
-      }
+      this.emit({ type: "status_change", status: "idle" });
+      this.turnInProgress = false;
+      const next = this.pendingUserMessages.shift();
+      if (next && this._connected) this.runTurn(next);
+      return;
     }
-
-    // Mark that we now have a prior session to resume
-    this.hasPriorSession = true;
 
     // Emit the response as an assistant message
     const msgId = randomUUID();
@@ -371,7 +494,6 @@ export class CopilotAdapter {
     });
 
     this.emit({ type: "status_change", status: "idle" });
-
     this.turnInProgress = false;
 
     // Process any queued messages
@@ -385,3 +507,4 @@ export class CopilotAdapter {
     this.browserMessageCb?.(msg);
   }
 }
+
