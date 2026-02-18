@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { DiffViewer } from "./DiffViewer.js";
 import type { ContentBlock } from "../types.js";
 
@@ -72,6 +72,13 @@ export function ToolBlock({
   const hasResult = result !== undefined;
   const isError = result?.is_error === true;
   const isPending = !hasResult;
+
+  // Auto-expand output section when tool block is opened and result exists
+  useEffect(() => {
+    if (open && hasResult) {
+      setResultOpen(true);
+    }
+  }, [open, hasResult]);
 
   return (
     <div className={`border rounded-[10px] overflow-hidden bg-cc-card ${

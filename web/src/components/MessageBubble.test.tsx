@@ -363,6 +363,31 @@ describe("MessageBubble - tool result pairing", () => {
     expect(errorBorder).toBeTruthy();
   });
 
+  it("auto-expands output when tool block is opened", () => {
+    const msg = makeMessage({
+      role: "assistant",
+      content: "",
+      contentBlocks: [
+        { type: "tool_use", id: "tu-1", name: "Bash", input: { command: "pwd" } },
+        { type: "tool_result", tool_use_id: "tu-1", content: "/home/user/project" },
+      ],
+    });
+    render(<MessageBubble message={msg} />);
+
+    // Initially, output should not be visible (tool block is collapsed)
+    expect(screen.queryByText("/home/user/project")).toBeNull();
+
+    // Click to expand the tool block
+    const expandButton = screen.getByText("Terminal").closest("button");
+    expect(expandButton).toBeTruthy();
+    fireEvent.click(expandButton!);
+
+    // After expanding, the output should be visible automatically
+    expect(screen.getByText("/home/user/project")).toBeTruthy();
+    // The "Output" label should also be visible
+    expect(screen.getByText("Output")).toBeTruthy();
+  });
+
   it("renders orphaned tool_result as standalone block", () => {
     // If a tool_result comes without a preceding tool_use in the same message,
     // it should be rendered as a standalone content block
