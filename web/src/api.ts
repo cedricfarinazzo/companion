@@ -218,6 +218,18 @@ export interface GitRepoInfo {
   isWorktree: boolean;
 }
 
+export interface GitStatusFile {
+  path: string;
+  status: "modified" | "added" | "deleted" | "renamed" | "untracked";
+  staged: boolean;
+}
+
+export interface WorkdirDiffResult {
+  isGitRepo: boolean;
+  repoRoot?: string;
+  files: GitStatusFile[];
+}
+
 export interface GitBranchInfo {
   name: string;
   isCurrent: boolean;
@@ -566,6 +578,12 @@ export const api = {
     }),
   removeWorktree: (repoRoot: string, worktreePath: string, force?: boolean) =>
     del("/git/worktree", { repoRoot, worktreePath, force }),
+
+  // Git worktree diff (git status --porcelain based)
+  getWorktreeDiff: (workdir: string) =>
+    get<WorkdirDiffResult>(
+      `/git/workdir-diff?workdir=${encodeURIComponent(workdir)}`,
+    ),
 
   // GitHub PR status
   getPRStatus: (cwd: string, branch: string) =>

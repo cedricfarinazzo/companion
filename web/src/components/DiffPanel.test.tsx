@@ -6,11 +6,13 @@ import "@testing-library/jest-dom";
 
 const mockApi = {
   getFileDiff: vi.fn().mockResolvedValue({ path: "/repo/file.ts", diff: "" }),
+  getWorktreeDiff: vi.fn().mockResolvedValue({ isGitRepo: true, files: [] }),
 };
 
 vi.mock("../api.js", () => ({
   api: {
     getFileDiff: (...args: unknown[]) => mockApi.getFileDiff(...args),
+    getWorktreeDiff: (...args: unknown[]) => mockApi.getWorktreeDiff(...args),
   },
 }));
 
@@ -144,6 +146,92 @@ describe("DiffPanel", () => {
     render(<DiffPanel sessionId="s1" />);
     await waitFor(() => {
       expect(storeState.setDiffPanelSelectedFile).toHaveBeenCalledWith("s1", "/repo/src/inside.ts");
+    });
+  });
+
+  it("shows 'Not a git repository' message when workdir is not a git repo", async () => {
+    // Validates that DiffPanel shows an informative error when the session cwd is not inside a git repo.
+    mockApi.getWorktreeDiff.mockResolvedValueOnce({ isGitRepo: false, files: [] });
+
+    render(<DiffPanel sessionId="s1" />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Not a git repository")).toBeInTheDocument();
+    });
+  });
+
+  it("shows git status badges (M/A/D/?) from getWorktreeDiff when available", async () => {
+    // Validates that the DiffPanel shows status badges from git status --porcelain alongside the file list.
+    mockApi.getWorktreeDiff.mockResolvedValue({
+      isGitRepo: true,
+      files: [
+        { path: "src/app.ts", status: "modified", staged: false },
+        { path: "src/new.ts", status: "added", staged: true },
+        { path: "src/old.ts", status: "deleted", staged: false },
+        { path: "src/untracked.ts", status: "untracked", staged: false },
+      ],
+    });
+
+    render(<DiffPanel sessionId="s1" />);
+
+    await waitFor(() => {
+      // Status badges: M=modified, A=added, D=deleted, ?=untracked
+      expect(screen.getByText("M")).toBeInTheDocument();
+      expect(screen.getByText("A")).toBeInTheDocument();
+      expect(screen.getByText("D")).toBeInTheDocument();
+      expect(screen.getByText("?")).toBeInTheDocument();
+      // File names should be visible
+      expect(screen.getByText("src/app.ts")).toBeInTheDocument();
+      expect(screen.getByText("src/new.ts")).toBeInTheDocument();
+    });
+  });
+
+  it("merges git status files with tool-call-tracked changed files", async () => {
+    // Validates that files from both changedFiles (tool calls) and git status are shown in the list,
+    // and that git status status info is applied to overlapping entries.
+    mockApi.getWorktreeDiff.mockResolvedValue({
+      isGitRepo: true,
+      files: [
+        { path: "src/app.ts", status: "modified", staged: false },
+        // git-only file (not in changedFiles)
+        { path: "src/git-only.ts", status: "added", staged: true },
+      ],
+    });
+
+    resetStore({
+      changedFiles: new Map([["s1", new Set(["/repo/src/app.ts", "/repo/src/tool-only.ts"])]]),
+    });
+
+    render(<DiffPanel sessionId="s1" />);
+
+    await waitFor(() => {
+      // All three files should appear
+      expect(screen.getByText("src/app.ts")).toBeInTheDocument();
+      expect(screen.getByText("src/git-only.ts")).toBeInTheDocument();
+      expect(screen.getByText("src/tool-only.ts")).toBeInTheDocument();
+      // Changed (3) in sidebar header
+      expect(screen.getByText("Changed (3)")).toBeInTheDocument();
+    });
+  });
+
+  it("shows refresh button in empty state and calls getWorktreeDiff on click", async () => {
+    // Validates that the empty state shows a Refresh button that triggers a git status re-fetch.
+    mockApi.getWorktreeDiff.mockResolvedValue({ isGitRepo: true, files: [] });
+
+    render(<DiffPanel sessionId="s1" />);
+
+    await waitFor(() => {
+      expect(screen.getByText("No changes yet")).toBeInTheDocument();
+    });
+
+    const refreshBtn = screen.getByRole("button", { name: /refresh/i });
+    expect(refreshBtn).toBeInTheDocument();
+
+    mockApi.getWorktreeDiff.mockClear();
+    fireEvent.click(refreshBtn);
+
+    await waitFor(() => {
+      expect(mockApi.getWorktreeDiff).toHaveBeenCalledWith("/repo");
     });
   });
 });

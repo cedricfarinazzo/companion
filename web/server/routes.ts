@@ -1364,6 +1364,62 @@ export function createRoutes(
     return c.json({ ...result, git_ahead, git_behind });
   });
 
+  // ─── Git working directory status ────────────────────────────────────
+
+  api.get("/git/workdir-diff", (c) => {
+    const workdir = c.req.query("workdir");
+    if (!workdir) return c.json({ error: "workdir required" }, 400);
+
+    const resolvedWorkdir = resolve(workdir);
+
+    try {
+      const repoRoot = execSync("git rev-parse --show-toplevel", {
+        cwd: resolvedWorkdir,
+        encoding: "utf-8",
+        timeout: 5000,
+      }).trim();
+
+      const statusOutput = execSync("git status --porcelain=v1", {
+        cwd: repoRoot,
+        encoding: "utf-8",
+        timeout: 5000,
+      });
+
+      const files: { path: string; status: string; staged: boolean }[] = [];
+      for (const line of statusOutput.split("\n")) {
+        if (line.length < 3) continue;
+        const x = line[0]; // index (staged) status
+        const y = line[1]; // working tree (unstaged) status
+        let filePath = line.slice(3);
+
+        // Handle renames: "R  old -> new" or "R  old\0new"
+        if ((x === "R" || y === "R") && filePath.includes(" -> ")) {
+          filePath = filePath.split(" -> ")[1];
+        }
+
+        let status: string;
+        if (x === "?" && y === "?") {
+          status = "untracked";
+        } else if (x === "A" || (x === " " && y === "A")) {
+          status = "added";
+        } else if (x === "D" || (x === " " && y === "D")) {
+          status = "deleted";
+        } else if (x === "R" || (x === " " && y === "R")) {
+          status = "renamed";
+        } else {
+          status = "modified";
+        }
+
+        const staged = x !== " " && x !== "?";
+        files.push({ path: filePath, status, staged });
+      }
+
+      return c.json({ isGitRepo: true, repoRoot, files });
+    } catch {
+      return c.json({ isGitRepo: false, files: [] });
+    }
+  });
+
   // ─── GitHub PR Status ────────────────────────────────────────────────
 
   api.get("/git/pr-status", async (c) => {

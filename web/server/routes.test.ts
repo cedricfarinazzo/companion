@@ -1473,6 +1473,88 @@ index 0000000..e69de29
   });
 });
 
+// ─── Git workdir diff ────────────────────────────────────────────────────────
+
+describe("GET /api/git/workdir-diff", () => {
+  it("returns 400 when workdir is missing", async () => {
+    const res = await app.request("/api/git/workdir-diff", { method: "GET" });
+
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json).toEqual({ error: "workdir required" });
+  });
+
+  it("returns structured file list from git status --porcelain", async () => {
+    // Validates that the endpoint parses git status --porcelain=v1 output and
+    // returns structured file entries with correct status labels, plus the repo root.
+    const statusOutput = " M src/app.ts\nA  src/new.ts\n D src/old.ts\n?? src/untracked.ts\n";
+    vi.mocked(execSync)
+      .mockReturnValueOnce("/repo\n") // rev-parse --show-toplevel
+      .mockReturnValueOnce(statusOutput); // git status --porcelain=v1
+
+    const res = await app.request("/api/git/workdir-diff?workdir=/repo", { method: "GET" });
+
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.isGitRepo).toBe(true);
+    expect(json.repoRoot).toBe("/repo");
+    expect(json.files).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: "src/app.ts", status: "modified", staged: false }),
+        expect.objectContaining({ path: "src/new.ts", status: "added", staged: true }),
+        expect.objectContaining({ path: "src/old.ts", status: "deleted", staged: false }),
+        expect.objectContaining({ path: "src/untracked.ts", status: "untracked", staged: false }),
+      ]),
+    );
+  });
+
+  it("returns isGitRepo: false when directory is not a git repository", async () => {
+    // Validates that a graceful response is returned when git rev-parse fails (not a git repo).
+    vi.mocked(execSync).mockImplementationOnce(() => {
+      throw new Error("not a git repository");
+    });
+
+    const res = await app.request("/api/git/workdir-diff?workdir=/not-a-repo", { method: "GET" });
+
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.isGitRepo).toBe(false);
+    expect(json.files).toEqual([]);
+  });
+
+  it("returns empty files array when working tree is clean", async () => {
+    // Validates that a clean working tree results in an empty files array.
+    vi.mocked(execSync)
+      .mockReturnValueOnce("/repo\n") // rev-parse --show-toplevel
+      .mockReturnValueOnce(""); // git status --porcelain=v1 (empty = clean)
+
+    const res = await app.request("/api/git/workdir-diff?workdir=/repo", { method: "GET" });
+
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.isGitRepo).toBe(true);
+    expect(json.files).toEqual([]);
+  });
+
+  it("handles renamed files correctly", async () => {
+    // Validates that renamed files (R status) show the new path and 'renamed' status.
+    const statusOutput = "R  old.ts -> new.ts\n";
+    vi.mocked(execSync)
+      .mockReturnValueOnce("/repo\n") // rev-parse --show-toplevel
+      .mockReturnValueOnce(statusOutput); // git status --porcelain=v1
+
+    const res = await app.request("/api/git/workdir-diff?workdir=/repo", { method: "GET" });
+
+    const json = await res.json();
+    expect(json.isGitRepo).toBe(true);
+    expect(json.files).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: "new.ts", status: "renamed", staged: true }),
+      ]),
+    );
+  });
+});
+
 // ─── Backends ─────────────────────────────────────────────────────────────────
 
 describe("GET /api/backends", () => {
