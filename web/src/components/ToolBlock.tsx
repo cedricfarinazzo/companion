@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { DiffViewer } from "./DiffViewer.js";
+import type { ContentBlock } from "../types.js";
 
 const TOOL_ICONS: Record<string, string> = {
   Bash: "terminal",
@@ -49,20 +50,40 @@ export function ToolBlock({
   name,
   input,
   toolUseId,
+  result,
 }: {
   name: string;
   input: Record<string, unknown>;
   toolUseId: string;
+  result?: {
+    content: string | ContentBlock[];
+    is_error?: boolean;
+  };
 }) {
   const [open, setOpen] = useState(false);
+  const [resultOpen, setResultOpen] = useState(false);
   const iconType = getToolIcon(name);
   const label = getToolLabel(name);
 
   // Extract the most useful preview
   const preview = getPreview(name, input);
 
+  // Determine status based on result
+  const hasResult = result !== undefined;
+  const isError = result?.is_error === true;
+  const isPending = !hasResult;
+
+  // Auto-expand output section when tool block is opened and result exists
+  useEffect(() => {
+    if (open && hasResult) {
+      setResultOpen(true);
+    }
+  }, [open, hasResult]);
+
   return (
-    <div className="border border-cc-border rounded-[10px] overflow-hidden bg-cc-card">
+    <div className={`border rounded-[10px] overflow-hidden bg-cc-card ${
+      isError ? "border-cc-error/40" : "border-cc-border"
+    }`}>
       <button
         onClick={() => setOpen(!open)}
         className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-cc-hover transition-colors cursor-pointer"
@@ -81,6 +102,22 @@ export function ToolBlock({
             {preview}
           </span>
         )}
+        {/* Status indicator */}
+        {isPending && (
+          <svg className="w-3 h-3 text-cc-primary animate-spin shrink-0" viewBox="0 0 16 16" fill="none">
+            <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.5" strokeDasharray="28" strokeDashoffset="8" strokeLinecap="round" />
+          </svg>
+        )}
+        {isError && (
+          <svg viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3 text-cc-error shrink-0">
+            <path fillRule="evenodd" d="M8 15A7 7 0 108 1a7 7 0 000 14zM7 4a1 1 0 112 0v4a1 1 0 11-2 0V4zm2 7a1 1 0 11-2 0 1 1 0 012 0z" clipRule="evenodd" />
+          </svg>
+        )}
+        {hasResult && !isError && (
+          <svg viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3 text-cc-success shrink-0">
+            <path fillRule="evenodd" d="M8 15A7 7 0 108 1a7 7 0 000 14zm3.354-9.354a.5.5 0 00-.708-.708L7 8.586 5.354 6.94a.5.5 0 10-.708.708l2 2a.5.5 0 00.708 0l4-4z" clipRule="evenodd" />
+          </svg>
+        )}
       </button>
 
       {open && (
@@ -88,6 +125,29 @@ export function ToolBlock({
           <div className="mt-2">
             <ToolDetail name={name} input={input} />
           </div>
+          {/* Render result if available */}
+          {hasResult && (
+            <div className="mt-3">
+              <button
+                onClick={() => setResultOpen(!resultOpen)}
+                className="flex items-center gap-2 text-xs font-medium text-cc-muted hover:text-cc-fg transition-colors mb-1.5"
+              >
+                <svg
+                  viewBox="0 0 16 16"
+                  fill="currentColor"
+                  className={`w-3 h-3 transition-transform ${resultOpen ? "rotate-90" : ""}`}
+                >
+                  <path d="M6 4l4 4-4 4" />
+                </svg>
+                <span className={isError ? "text-cc-error" : "text-cc-fg"}>
+                  {isError ? "Error Output" : "Output"}
+                </span>
+              </button>
+              {resultOpen && (
+                <ToolResultDisplay content={result.content} isError={isError} />
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -372,6 +432,35 @@ function SendMessageDetail({ input }: { input: Record<string, unknown> }) {
       )}
       {!!input.content && (
         <div className="text-xs text-cc-fg whitespace-pre-wrap">{String(input.content)}</div>
+      )}
+    </div>
+  );
+}
+
+// ─── Tool Result Display ────────────────────────────────────────────────────
+
+function ToolResultDisplay({ content, isError }: { content: string | ContentBlock[]; isError?: boolean }) {
+  const [truncated, setTruncated] = useState(true);
+  const contentStr = typeof content === "string" ? content : JSON.stringify(content, null, 2);
+  const isLarge = contentStr.length > 500;
+  const displayContent = truncated && isLarge ? contentStr.slice(0, 500) + "..." : contentStr;
+
+  return (
+    <div className="space-y-1.5">
+      <pre className={`text-[11px] font-mono-code whitespace-pre-wrap leading-relaxed px-3 py-2 rounded-lg border max-h-60 overflow-y-auto ${
+        isError
+          ? "bg-cc-error/5 border-cc-error/20 text-cc-error"
+          : "bg-cc-code-bg border-cc-border text-cc-code-fg"
+      }`}>
+        {displayContent}
+      </pre>
+      {isLarge && (
+        <button
+          onClick={() => setTruncated(!truncated)}
+          className="text-[10px] text-cc-primary hover:underline"
+        >
+          {truncated ? "Show more" : "Show less"}
+        </button>
       )}
     </div>
   );

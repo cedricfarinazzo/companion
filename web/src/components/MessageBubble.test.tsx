@@ -181,6 +181,8 @@ describe("MessageBubble - assistant messages", () => {
     render(<MessageBubble message={msg} />);
 
     expect(screen.getByText("Command output: success")).toBeTruthy();
+    // Should have "Tool Output" label
+    expect(screen.getByText("✓ Tool Output")).toBeTruthy();
   });
 
   it("renders tool_result blocks with JSON content", () => {
@@ -197,6 +199,8 @@ describe("MessageBubble - assistant messages", () => {
     // The JSON.stringify of the content should be rendered
     const rendered = screen.getByText(JSON.stringify(jsonContent));
     expect(rendered).toBeTruthy();
+    // Should have "Tool Output" label
+    expect(screen.getByText("✓ Tool Output")).toBeTruthy();
   });
 
   it("renders tool_result error blocks with error styling", () => {
@@ -210,6 +214,8 @@ describe("MessageBubble - assistant messages", () => {
     const { container } = render(<MessageBubble message={msg} />);
 
     expect(screen.getByText("Error: file not found")).toBeTruthy();
+    // Should have "Tool Error" label
+    expect(screen.getByText("⚠️ Tool Error")).toBeTruthy();
     // Check for error styling class
     const errorDiv = container.querySelector(".text-cc-error");
     expect(errorDiv).toBeTruthy();
@@ -325,5 +331,129 @@ describe("MessageBubble - content block grouping", () => {
     // The two Read tools should not be grouped since there is a text block between them
     const labels = screen.getAllByText("Read File");
     expect(labels.length).toBe(2);
+  });
+});
+
+// ─── Tool result pairing ─────────────────────────────────────────────────────
+
+describe("MessageBubble - tool result pairing", () => {
+  it("pairs tool_result with tool_use by tool_use_id", () => {
+    const msg = makeMessage({
+      role: "assistant",
+      content: "",
+      contentBlocks: [
+        { type: "tool_use", id: "tu-1", name: "Bash", input: { command: "pwd" } },
+        { type: "tool_result", tool_use_id: "tu-1", content: "/home/user/project" },
+      ],
+    });
+    const { container } = render(<MessageBubble message={msg} />);
+
+    // Tool should be rendered
+    expect(screen.getByText("Terminal")).toBeTruthy();
+    
+    // Success indicator should be present (checkmark icon)
+    const successIcon = container.querySelector(".text-cc-success");
+    expect(successIcon).toBeTruthy();
+  });
+
+  it("shows pending state for tool_use without result", () => {
+    const msg = makeMessage({
+      role: "assistant",
+      content: "",
+      contentBlocks: [
+        { type: "tool_use", id: "tu-1", name: "Bash", input: { command: "npm build" } },
+      ],
+    });
+    const { container } = render(<MessageBubble message={msg} />);
+
+    expect(screen.getByText("Terminal")).toBeTruthy();
+    
+    // Spinner/loading indicator should be present
+    const spinner = container.querySelector(".animate-spin");
+    expect(spinner).toBeTruthy();
+  });
+
+  it("shows error state for tool_result with is_error flag", () => {
+    const msg = makeMessage({
+      role: "assistant",
+      content: "",
+      contentBlocks: [
+        { type: "tool_use", id: "tu-1", name: "Bash", input: { command: "bad command" } },
+        { type: "tool_result", tool_use_id: "tu-1", content: "Error: command not found", is_error: true },
+      ],
+    });
+    const { container } = render(<MessageBubble message={msg} />);
+
+    expect(screen.getByText("Terminal")).toBeTruthy();
+    
+    // Error indicator should be present
+    const errorIcon = container.querySelector(".text-cc-error");
+    expect(errorIcon).toBeTruthy();
+    
+    // Error border should be present
+    const errorBorder = container.querySelector(".border-cc-error\\/40");
+    expect(errorBorder).toBeTruthy();
+  });
+
+  it("auto-expands output when tool block is opened", () => {
+    const msg = makeMessage({
+      role: "assistant",
+      content: "",
+      contentBlocks: [
+        { type: "tool_use", id: "tu-1", name: "Bash", input: { command: "pwd" } },
+        { type: "tool_result", tool_use_id: "tu-1", content: "/home/user/project" },
+      ],
+    });
+    render(<MessageBubble message={msg} />);
+
+    // Initially, output should not be visible (tool block is collapsed)
+    expect(screen.queryByText("/home/user/project")).toBeNull();
+
+    // Click to expand the tool block
+    const expandButton = screen.getByText("Terminal").closest("button");
+    expect(expandButton).toBeTruthy();
+    fireEvent.click(expandButton!);
+
+    // After expanding, the output should be visible automatically
+    expect(screen.getByText("/home/user/project")).toBeTruthy();
+    // The "Output" label should also be visible
+    expect(screen.getByText("Output")).toBeTruthy();
+  });
+
+  it("renders orphaned tool_result as standalone block", () => {
+    // If a tool_result comes without a preceding tool_use in the same message,
+    // it should be rendered as a standalone content block
+    const msg = makeMessage({
+      role: "assistant",
+      content: "",
+      contentBlocks: [
+        { type: "tool_result", tool_use_id: "tu-unknown", content: "Some output" },
+      ],
+    });
+    render(<MessageBubble message={msg} />);
+
+    // Should render the result content
+    expect(screen.getByText("Some output")).toBeTruthy();
+  });
+
+  it("handles multiple tool_use/tool_result pairs in sequence", () => {
+    const msg = makeMessage({
+      role: "assistant",
+      content: "",
+      contentBlocks: [
+        { type: "tool_use", id: "tu-1", name: "Read", input: { file_path: "/a.ts" } },
+        { type: "tool_result", tool_use_id: "tu-1", content: "file content A" },
+        { type: "tool_use", id: "tu-2", name: "Read", input: { file_path: "/b.ts" } },
+        { type: "tool_result", tool_use_id: "tu-2", content: "file content B" },
+      ],
+    });
+    render(<MessageBubble message={msg} />);
+
+    // Both tools should be grouped together (same tool type)
+    const groupBadge = screen.getByText("2");
+    expect(groupBadge).toBeTruthy();
+    
+    // The group label should appear
+    expect(screen.getByText("Read File")).toBeTruthy();
   });
 });
