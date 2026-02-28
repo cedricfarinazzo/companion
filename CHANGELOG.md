@@ -1,5 +1,146 @@
 # Changelog
 
+## [0.67.0](https://github.com/The-Vibe-Company/companion/compare/the-companion-v0.66.0...the-companion-v0.67.0) (2026-02-28)
+
+
+### Features
+
+* **multi-agent:** enable codex by default and improve subagent UI ([#444](https://github.com/The-Vibe-Company/companion/issues/444)) ([973ca5f](https://github.com/The-Vibe-Company/companion/commit/973ca5facc9f9c1b36b3b48f0d7183c8fa54da47))
+* **web:** add prerelease update channel and preview CI pipeline ([#451](https://github.com/The-Vibe-Company/companion/issues/451)) ([6799c6f](https://github.com/The-Vibe-Company/companion/commit/6799c6f46124ff2da61d7612f344fbd23da9ec69))
+* **web:** make saved prompts targetable by project scope or global ([#448](https://github.com/The-Vibe-Company/companion/issues/448)) ([805eb73](https://github.com/The-Vibe-Company/companion/commit/805eb73c7f3138a6feb5ad33a485dc60d9364a0a))
+
+
+### Bug Fixes
+
+* **ci:** use bun run test instead of bun test in preview workflow ([#452](https://github.com/The-Vibe-Company/companion/issues/452)) ([f2e2f10](https://github.com/The-Vibe-Company/companion/commit/f2e2f10b7f74c9fb3126c9c9d2be1c74b43a3bf9))
+* **codex:** preserve parent id in task tool-use backfill ([#447](https://github.com/The-Vibe-Company/companion/issues/447)) ([a208ee4](https://github.com/The-Vibe-Company/companion/commit/a208ee42e09209866be39940c6fb2d480d9ecc5a))
+* **web:** decouple Saved Prompts page from session cwd and add grouped view ([#450](https://github.com/The-Vibe-Company/companion/issues/450)) ([c87cd27](https://github.com/The-Vibe-Company/companion/commit/c87cd2799c341ec44e760721df6a2721f0a3c1d0))
+* **web:** prevent Codex Docker sessions from becoming zombie/unreachable ([#449](https://github.com/The-Vibe-Company/companion/issues/449)) ([db947f5](https://github.com/The-Vibe-Company/companion/commit/db947f57989d676e1b40f44a7c7014cffb5fed19))
+
+## [0.66.0](https://github.com/The-Vibe-Company/companion/compare/the-companion-v0.65.0...the-companion-v0.66.0) (2026-02-28)
+
+
+### Features
+
+* **web:** prompt to transition Linear issue status on session archive ([#441](https://github.com/The-Vibe-Company/companion/issues/441)) ([e8ed5bd](https://github.com/The-Vibe-Company/companion/commit/e8ed5bd4a3b30f20dcd7e10d64f834752bed8b37))
+
+## [0.65.0](https://github.com/The-Vibe-Company/companion/compare/the-companion-v0.64.3...the-companion-v0.65.0) (2026-02-27)
+
+
+### Features
+
+* **web:** replace OpenRouter by Anthropic for AI features ([#439](https://github.com/The-Vibe-Company/companion/issues/439)) ([40d794c](https://github.com/The-Vibe-Company/companion/commit/40d794c24f90cd31628a362c960ad135877326e9))
+
+## [0.64.3](https://github.com/The-Vibe-Company/companion/compare/the-companion-v0.64.2...the-companion-v0.64.3) (2026-02-27)
+
+
+### Bug Fixes
+
+* **web:** send full Linear ticket description in session prompt ([#435](https://github.com/The-Vibe-Company/companion/issues/435)) ([bd9745a](https://github.com/The-Vibe-Company/companion/commit/bd9745a81b43fccb843a32d9a842e6c04e7fb8b5))
+
+## [0.64.2](https://github.com/The-Vibe-Company/companion/compare/the-companion-v0.64.1...the-companion-v0.64.2) (2026-02-27)
+
+
+### Bug Fixes
+
+* **web:** flush pending messages when attaching Codex adapter ([#433](https://github.com/The-Vibe-Company/companion/issues/433)) ([86a25ff](https://github.com/The-Vibe-Company/companion/commit/86a25ffde7ce7c8672367607352508bcc222b08a))
+
+## [0.64.1](https://github.com/The-Vibe-Company/companion/compare/the-companion-v0.64.0...the-companion-v0.64.1) (2026-02-26)
+
+
+### Bug Fixes
+
+* **web:** fix Codex session reconnection Transport closed errors ([#431](https://github.com/The-Vibe-Company/companion/issues/431)) ([c559f79](https://github.com/The-Vibe-Company/companion/commit/c559f7910c4d18b83b343af99ef7c932e66cce66))
+
+## [0.64.0](https://github.com/The-Vibe-Company/companion/compare/the-companion-v0.63.0...the-companion-v0.64.0) (2026-02-26)
+
+
+### Features
+
+* **web:** increase recorder max lines from 100k to 1M ([#426](https://github.com/The-Vibe-Company/companion/issues/426)) ([cf7a70b](https://github.com/The-Vibe-Company/companion/commit/cf7a70bf107722c48c784d8ca829196171ef27e3))
+* **web:** make AI validation configurable per session ([#428](https://github.com/The-Vibe-Company/companion/issues/428)) ([bfec31a](https://github.com/The-Vibe-Company/companion/commit/bfec31a29e15441e1e3c251752d4570b6950692f))
+
+
+### Bug Fixes
+
+* **web:** broadcast session name update on manual rename ([#427](https://github.com/The-Vibe-Company/companion/issues/427)) ([e3479b8](https://github.com/The-Vibe-Company/companion/commit/e3479b8ca0018014f6bd3121246d047ee292125e))
+* **web:** handle Codex ExitPlanMode as dedicated permission request ([#430](https://github.com/The-Vibe-Company/companion/issues/430)) ([bde2d11](https://github.com/The-Vibe-Company/companion/commit/bde2d11b5234faa9f6889d78133ef3dc2ae182ad))
+
+## [0.63.0](https://github.com/The-Vibe-Company/companion/compare/the-companion-v0.62.0...the-companion-v0.63.0) (2026-02-26)
+
+
+### Features
+
+* **web:** add create Linear issue button in context section ([#421](https://github.com/The-Vibe-Company/companion/issues/421)) ([22e658c](https://github.com/The-Vibe-Company/companion/commit/22e658c1c0c533a058887d12ebefbbee68e10d3c))
+* **web:** move git fetch/checkout/pull inside Docker container ([#422](https://github.com/The-Vibe-Company/companion/issues/422)) ([02b22fa](https://github.com/The-Vibe-Company/companion/commit/02b22fa57dab59d95bf3a812c6800a1cdd121975))
+* **web:** move git fetch/checkout/pull inside Docker container ([#424](https://github.com/The-Vibe-Company/companion/issues/424)) ([8559dcf](https://github.com/The-Vibe-Company/companion/commit/8559dcf49a23d1969b17907f33c4ffcf91205f63))
+
+## [0.62.0](https://github.com/The-Vibe-Company/companion/compare/the-companion-v0.61.2...the-companion-v0.62.0) (2026-02-26)
+
+
+### Features
+
+* **web:** add @ mention prompt support to home page input ([#419](https://github.com/The-Vibe-Company/companion/issues/419)) ([94dbb4e](https://github.com/The-Vibe-Company/companion/commit/94dbb4e4d44317aa823125678b6210f5c6adee96))
+* **web:** implement AI validation mode for permission requests ([#420](https://github.com/The-Vibe-Company/companion/issues/420)) ([3436175](https://github.com/The-Vibe-Company/companion/commit/3436175dfb66810584ef168ad943f0e47086623d))
+
+
+### Bug Fixes
+
+* **web:** fix plan display colors broken in light mode ([#417](https://github.com/The-Vibe-Company/companion/issues/417)) ([90f6e81](https://github.com/The-Vibe-Company/companion/commit/90f6e8182af098027610bc89481bb7c87c0038f3))
+
+## [0.61.2](https://github.com/The-Vibe-Company/companion/compare/the-companion-v0.61.1...the-companion-v0.61.2) (2026-02-25)
+
+
+### Bug Fixes
+
+* **web:** add auth header to UpdateOverlay server poll ([#410](https://github.com/The-Vibe-Company/companion/issues/410)) ([86e26cb](https://github.com/The-Vibe-Company/companion/commit/86e26cb0a3983b5c5c39aa3a60276bdedf17629a))
+
+## [0.61.1](https://github.com/The-Vibe-Company/companion/compare/the-companion-v0.61.0...the-companion-v0.61.1) (2026-02-24)
+
+
+### Bug Fixes
+
+* **agents:** replace emoji icons with SVG icon system ([#406](https://github.com/The-Vibe-Company/companion/issues/406)) ([d2ed31b](https://github.com/The-Vibe-Company/companion/commit/d2ed31b477e07d7f8d17e2a19c01599b45e05f69))
+
+## [0.61.0](https://github.com/The-Vibe-Company/companion/compare/the-companion-v0.60.1...the-companion-v0.61.0) (2026-02-24)
+
+
+### Features
+
+* **web:** add auth, PWA, process panel, editor/files, page redesigns, and theme polish ([#396](https://github.com/The-Vibe-Company/companion/issues/396)) ([cb2f101](https://github.com/The-Vibe-Company/companion/commit/cb2f101d7c2764fbaa0d582ed1022763706c9283))
+
+## [0.60.1](https://github.com/The-Vibe-Company/companion/compare/the-companion-v0.60.0...the-companion-v0.60.1) (2026-02-24)
+
+
+### Bug Fixes
+
+* **agents:** add resilient webhook copy URL behavior ([#400](https://github.com/The-Vibe-Company/companion/issues/400)) ([07bbf9b](https://github.com/The-Vibe-Company/companion/commit/07bbf9b8e63ec9e20f0bb4ac52fd6d0d18614f71))
+
+## [0.60.0](https://github.com/The-Vibe-Company/companion/compare/the-companion-v0.59.0...the-companion-v0.60.0) (2026-02-24)
+
+
+### Features
+
+* **agents:** add reusable agent system with triggers, MCP, and scheduling ([#397](https://github.com/The-Vibe-Company/companion/issues/397)) ([1849d5d](https://github.com/The-Vibe-Company/companion/commit/1849d5d7c2a2b3d4036f8b2aebd1adc84f14258e))
+
+
+### Bug Fixes
+
+* **ci:** rewrite coverage gate to enforce 80% on new/changed files ([#399](https://github.com/The-Vibe-Company/companion/issues/399)) ([e257897](https://github.com/The-Vibe-Company/companion/commit/e257897674024a5cad12f3468c73a7e2f9d7c799))
+
+## [0.59.0](https://github.com/The-Vibe-Company/companion/compare/the-companion-v0.58.2...the-companion-v0.59.0) (2026-02-22)
+
+
+### Features
+
+* **diff:** use git diff as source of truth; show A/M/D status icons and deleted files ([#385](https://github.com/The-Vibe-Company/companion/issues/385)) ([d1e0db5](https://github.com/The-Vibe-Company/companion/commit/d1e0db5f9b94bd5fe055455bf6b4f69714e350f5))
+* **web:** improve streaming reliability and session branching controls ([#381](https://github.com/The-Vibe-Company/companion/issues/381)) ([200ab34](https://github.com/The-Vibe-Company/companion/commit/200ab34f42969e09c1a1e9bbb0ba6df44b791a6e))
+
+
+### Bug Fixes
+
+* **codex:** normalize rate-limit reset timestamps ([#386](https://github.com/The-Vibe-Company/companion/issues/386)) ([f361696](https://github.com/The-Vibe-Company/companion/commit/f3616960e48dcddccc48c956621c819568157e49))
+
 ## [0.58.2](https://github.com/The-Vibe-Company/companion/compare/the-companion-v0.58.1...the-companion-v0.58.2) (2026-02-21)
 
 

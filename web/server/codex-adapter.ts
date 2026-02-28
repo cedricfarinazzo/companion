@@ -107,6 +107,16 @@ interface CodexContextCompactionItem extends CodexItem {
   type: "contextCompaction";
 }
 
+interface CodexCollabAgentToolCallItem extends CodexItem {
+  type: "collabAgentToolCall";
+  tool: string;
+  status: "inProgress" | "completed" | "failed";
+  senderThreadId?: string;
+  receiverThreadIds?: string[];
+  prompt?: string | null;
+  agentsStates?: Record<string, unknown>;
+}
+
 interface PlanTodo {
   content: string;
   status: "pending" | "in_progress" | "completed";
@@ -124,6 +134,32 @@ interface CodexMcpStatusListResponse {
   nextCursor?: string | null;
 }
 
+// ─── Transport Interface ─────────────────────────────────────────────────────
+
+/** Abstract transport for Codex JSON-RPC communication. */
+export interface ICodexTransport {
+  call(method: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<unknown>;
+  notify(method: string, params?: Record<string, unknown>): Promise<void>;
+  respond(id: number, result: unknown): Promise<void>;
+  onNotification(handler: (method: string, params: Record<string, unknown>) => void): void;
+  onRequest(handler: (method: string, id: number, params: Record<string, unknown>) => void): void;
+  onRawIncoming(cb: (line: string) => void): void;
+  onRawOutgoing(cb: (data: string) => void): void;
+  isConnected(): boolean;
+}
+
+/** Default RPC call timeout in milliseconds. */
+const DEFAULT_RPC_TIMEOUT_MS = 60_000;
+
+/** Per-method timeout overrides (ms). */
+const RPC_METHOD_TIMEOUTS: Record<string, number> = {
+  "turn/start": 120_000,
+  "turn/interrupt": 15_000,
+  "codex/configureSession": 30_000,
+  "thread/start": 30_000,
+  "thread/resume": 30_000,
+};
+
 // ─── Adapter Options ──────────────────────────────────────────────────────────
 
 export interface CodexAdapterOptions {
@@ -137,13 +173,16 @@ export interface CodexAdapterOptions {
   threadId?: string;
   /** Optional recorder for raw message capture. */
   recorder?: RecorderManager;
+  /** Callback to kill the underlying process/connection on disconnect. */
+  killProcess?: () => Promise<void> | void;
 }
 
-// ─── JSON-RPC Transport ───────────────────────────────────────────────────────
+// ─── Stdio JSON-RPC Transport ────────────────────────────────────────────────
 
-class JsonRpcTransport {
+export class StdioTransport implements ICodexTransport {
   private nextId = 1;
   private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+  private pendingTimers = new Map<number, ReturnType<typeof setTimeout>>();
   private notificationHandler: ((method: string, params: Record<string, unknown>) => void) | null = null;
   private requestHandler: ((method: string, id: number, params: Record<string, unknown>) => void) | null = null;
   private rawInCb: ((line: string) => void) | null = null;
@@ -189,8 +228,12 @@ class JsonRpcTransport {
       console.error("[codex-adapter] stdout reader error:", err);
     } finally {
       this.connected = false;
-      // Reject all pending promises so callers don't hang indefinitely
-      // when the Codex process crashes or exits unexpectedly.
+      // Clear all pending RPC timers and reject promises so callers don't
+      // hang indefinitely when the Codex process crashes or exits.
+      for (const [id, timer] of this.pendingTimers) {
+        clearTimeout(timer);
+      }
+      this.pendingTimers.clear();
       for (const [id, { reject }] of this.pending) {
         reject(new Error("Transport closed"));
       }
@@ -229,9 +272,15 @@ class JsonRpcTransport {
         this.requestHandler?.(msg.method, msg.id as number, (msg as JsonRpcRequest).params || {});
       } else {
         // This is a response to one of our requests
-        const pending = this.pending.get(msg.id as number);
+        const msgId = msg.id as number;
+        const pending = this.pending.get(msgId);
         if (pending) {
-          this.pending.delete(msg.id as number);
+          this.pending.delete(msgId);
+          const timer = this.pendingTimers.get(msgId);
+          if (timer) {
+            clearTimeout(timer);
+            this.pendingTimers.delete(msgId);
+          }
           const resp = msg as JsonRpcResponse;
           if (resp.error) {
             pending.reject(new Error(resp.error.message));
@@ -246,15 +295,25 @@ class JsonRpcTransport {
     }
   }
 
-  /** Send a request and wait for the matching response. */
-  async call(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
+  /** Send a request and wait for the matching response.
+   *  Rejects with a timeout error if no response arrives within the deadline. */
+  async call(method: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<unknown> {
     const id = this.nextId++;
+    const effectiveTimeout = timeoutMs ?? RPC_METHOD_TIMEOUTS[method] ?? DEFAULT_RPC_TIMEOUT_MS;
     return new Promise(async (resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        this.pendingTimers.delete(id);
+        reject(new Error(`RPC timeout: ${method} did not respond within ${effectiveTimeout}ms`));
+      }, effectiveTimeout);
+      this.pendingTimers.set(id, timer);
       this.pending.set(id, { resolve, reject });
       const request = JSON.stringify({ method, id, params });
       try {
         await this.writeRaw(request + "\n");
       } catch (err) {
+        clearTimeout(timer);
+        this.pendingTimers.delete(id);
         this.pending.delete(id);
         reject(err instanceof Error ? err : new Error(String(err)));
       }
@@ -310,8 +369,7 @@ class JsonRpcTransport {
 // ─── Codex Adapter ────────────────────────────────────────────────────────────
 
 export class CodexAdapter {
-  private transport: JsonRpcTransport;
-  private proc: Subprocess;
+  private transport: ICodexTransport;
   private sessionId: string;
   private options: CodexAdapterOptions;
 
@@ -326,6 +384,7 @@ export class CodexAdapter {
   private connected = false;
   private initialized = false;
   private initFailed = false;
+  private initInProgress = false;
 
   // Streaming accumulator for agent messages
   private streamingText = "";
@@ -353,6 +412,8 @@ export class CodexAdapter {
   // When Codex auto-approves (approvalPolicy "never"), it may skip item/started
   // and only send item/completed — we need to emit tool_use before tool_result.
   private emittedToolUseIds = new Set<string>();
+  // Receiver subagent thread ID -> parent collab tool_use ID.
+  private parentToolUseByThreadId = new Map<string, string>();
 
   // Queue messages received before initialization completes
   private pendingOutgoing: BrowserOutgoingMessage[] = [];
@@ -363,6 +424,7 @@ export class CodexAdapter {
   // Track request types that need different response formats
   private pendingUserInputQuestionIds = new Map<string, string[]>(); // request_id -> ordered Codex question IDs
   private pendingReviewDecisions = new Set<string>(); // request_ids that need ReviewDecision format
+  private pendingExitPlanModeRequests = new Set<string>(); // request_ids for ExitPlanMode approvals
   private pendingDynamicToolCalls = new Map<string, {
     jsonRpcId: number;
     callId: string;
@@ -381,8 +443,12 @@ export class CodexAdapter {
     return this.options.executionCwd || this.options.cwd || "";
   }
 
-  constructor(proc: Subprocess, sessionId: string, options: CodexAdapterOptions = {}) {
-    this.proc = proc;
+  /**
+   * Create a CodexAdapter.
+   * @param transportOrProc - Either a pre-built ICodexTransport or a Bun Subprocess
+   *   (backward compat: when given a Subprocess, a StdioTransport is built from its pipes).
+   */
+  constructor(transportOrProc: ICodexTransport | Subprocess, sessionId: string, options: CodexAdapterOptions = {}) {
     this.sessionId = sessionId;
     this.options = options;
     this.currentPermissionMode = options.approvalMode || "default";
@@ -393,16 +459,51 @@ export class CodexAdapter {
       ? "plan"
       : "default";
 
-    const stdout = proc.stdout;
-    const stdin = proc.stdin;
-    if (!stdout || !stdin || typeof stdout === "number" || typeof stdin === "number") {
-      throw new Error("Codex process must have stdio pipes");
+    // Determine whether we received a transport or a subprocess
+    if (this.isTransport(transportOrProc)) {
+      // Pre-built transport (e.g. WebSocketTransport)
+      this.transport = transportOrProc;
+    } else {
+      // Subprocess — build StdioTransport from its pipes (legacy path)
+      const proc = transportOrProc;
+      const stdout = proc.stdout;
+      const stdin = proc.stdin;
+      if (!stdout || !stdin || typeof stdout === "number" || typeof stdin === "number") {
+        throw new Error("Codex process must have stdio pipes");
+      }
+
+      this.transport = new StdioTransport(
+        stdin as WritableStream<Uint8Array> | { write(data: Uint8Array): number },
+        stdout as ReadableStream<Uint8Array>,
+      );
+
+      // Monitor process exit — when using a subprocess directly,
+      // set up the exit handler here. For transport-only mode,
+      // the caller provides killProcess and the transport's own
+      // close handling triggers disconnectCb.
+      if (!options.killProcess) {
+        options.killProcess = async () => {
+          try {
+            proc.kill("SIGTERM");
+            await Promise.race([
+              proc.exited,
+              new Promise((r) => setTimeout(r, 5000)),
+            ]);
+          } catch {}
+        };
+      }
+
+      proc.exited.then(() => {
+        this.connected = false;
+        for (const pending of this.pendingDynamicToolCalls.values()) {
+          clearTimeout(pending.timeout);
+        }
+        this.pendingDynamicToolCalls.clear();
+        this.pendingExitPlanModeRequests.clear();
+        this.disconnectCb?.();
+      });
     }
 
-    this.transport = new JsonRpcTransport(
-      stdin as WritableStream<Uint8Array> | { write(data: Uint8Array): number },
-      stdout as ReadableStream<Uint8Array>,
-    );
     this.transport.onNotification((method, params) => this.handleNotification(method, params));
     this.transport.onRequest((method, id, params) => this.handleRequest(method, id, params));
 
@@ -418,17 +519,63 @@ export class CodexAdapter {
       });
     }
 
-    // Monitor process exit
-    proc.exited.then(() => {
-      this.connected = false;
-      for (const pending of this.pendingDynamicToolCalls.values()) {
-        clearTimeout(pending.timeout);
-      }
-      this.pendingDynamicToolCalls.clear();
-      this.disconnectCb?.();
-    });
-
     // Start initialization
+    this.initialize();
+  }
+
+  /** Type guard: is the argument an ICodexTransport (vs a Subprocess)? */
+  private isTransport(obj: ICodexTransport | Subprocess): obj is ICodexTransport {
+    return typeof (obj as ICodexTransport).call === "function"
+      && typeof (obj as ICodexTransport).notify === "function"
+      && typeof (obj as ICodexTransport).respond === "function"
+      && typeof (obj as ICodexTransport).onNotification === "function";
+  }
+
+  /**
+   * Notify the adapter that the underlying transport has closed.
+   * Used by WebSocket transport mode — the launcher wires the WS close
+   * event to this method so the adapter can clean up and fire disconnectCb.
+   */
+  handleTransportClose(): void {
+    this.connected = false;
+    for (const pending of this.pendingDynamicToolCalls.values()) {
+      clearTimeout(pending.timeout);
+    }
+    this.pendingDynamicToolCalls.clear();
+    this.pendingExitPlanModeRequests.clear();
+    this.disconnectCb?.();
+  }
+
+  /**
+   * Reset the adapter so it can re-initialize after a transport reconnection.
+   * Called by the launcher when a new proxy/transport is established for the
+   * same session (e.g. after relaunch).  The threadId is preserved so the
+   * adapter can resume the existing Codex thread.
+   */
+  resetForReconnect(newTransport: ICodexTransport): void {
+    this.transport = newTransport;
+    this.connected = false;
+    this.initialized = false;
+    this.initFailed = false;
+    this.initInProgress = false;
+
+    // Re-wire handlers on the new transport
+    this.transport.onNotification((method, params) => this.handleNotification(method, params));
+    this.transport.onRequest((method, id, params) => this.handleRequest(method, id, params));
+
+    // Re-wire raw recording if recorder was provided
+    if (this.options.recorder) {
+      const recorder = this.options.recorder;
+      const cwd = this.options.cwd || "";
+      this.transport.onRawIncoming((line) => {
+        recorder.record(this.sessionId, "in", line, "cli", "codex", cwd);
+      });
+      this.transport.onRawOutgoing((data) => {
+        recorder.record(this.sessionId, "out", data.trimEnd(), "cli", "codex", cwd);
+      });
+    }
+
+    // Re-run initialization (which will resume the thread if threadId is set)
     this.initialize();
   }
 
@@ -445,7 +592,7 @@ export class CodexAdapter {
     }
 
     // Queue messages if not yet initialized (init is async)
-    if (!this.initialized || !this.threadId) {
+    if (!this.initialized || !this.threadId || this.initInProgress) {
       if (
         msg.type === "user_message"
         || msg.type === "permission_response"
@@ -462,7 +609,42 @@ export class CodexAdapter {
       if (!this.connected) return false;
     }
 
+    // Guard against dispatching when transport is down (e.g. after proxy WS drop)
+    if (!this.transport.isConnected()) {
+      console.warn(`[codex-adapter] Transport disconnected — cannot dispatch ${msg.type}`);
+      return false;
+    }
+
+    // Drain any messages that were queued during init but not yet flushed
+    // (e.g. if the post-init flush found the transport temporarily unavailable
+    // but it recovered by the time the next message arrives).
+    this.flushPendingOutgoing();
+
     return this.dispatchOutgoing(msg);
+  }
+
+  /**
+   * Drain any messages still sitting in the pendingOutgoing queue.
+   * Called both at the end of initialize() and as a safety net in
+   * sendBrowserMessage() — the latter covers edge cases where the
+   * post-init flush was skipped (e.g. transport was momentarily
+   * unavailable right after init completed in a Docker container).
+   */
+  private flushPendingOutgoing(): void {
+    if (this.pendingOutgoing.length === 0) return;
+    if (!this.transport.isConnected()) {
+      console.warn(
+        `[codex-adapter] Session ${this.sessionId}: transport disconnected — keeping ${this.pendingOutgoing.length} message(s) queued`,
+      );
+      return;
+    }
+    console.log(
+      `[codex-adapter] Session ${this.sessionId}: flushing ${this.pendingOutgoing.length} queued message(s)`,
+    );
+    const queued = this.pendingOutgoing.splice(0);
+    for (const msg of queued) {
+      this.dispatchOutgoing(msg);
+    }
   }
 
   private dispatchOutgoing(msg: BrowserOutgoingMessage): boolean {
@@ -521,13 +703,11 @@ export class CodexAdapter {
 
   async disconnect(): Promise<void> {
     this.connected = false;
-    try {
-      this.proc.kill("SIGTERM");
-      await Promise.race([
-        this.proc.exited,
-        new Promise((r) => setTimeout(r, 5000)),
-      ]);
-    } catch {}
+    if (this.options.killProcess) {
+      try {
+        await this.options.killProcess();
+      } catch {}
+    }
   }
 
   getThreadId(): string | null {
@@ -536,7 +716,17 @@ export class CodexAdapter {
 
   // ── Initialization ──────────────────────────────────────────────────────
 
+  /** Max retries for thread/start or thread/resume during initialization. */
+  private static readonly INIT_THREAD_MAX_RETRIES = 3;
+  private static readonly INIT_THREAD_RETRY_BASE_MS = 500;
+
   private async initialize(): Promise<void> {
+    if (this.initInProgress) {
+      console.warn("[codex-adapter] initialize() called while already in progress — skipping");
+      return;
+    }
+    this.initInProgress = true;
+
     try {
       // Step 1: Send initialize request
       const result = await this.transport.call("initialize", {
@@ -554,36 +744,65 @@ export class CodexAdapter {
       await this.transport.notify("initialized", {});
 
       this.connected = true;
-      this.initialized = true;
 
-      // Step 3: Start or resume a thread
+      // Step 3: Start or resume a thread — retry with backoff on transient
+      // transport errors (e.g. proxy WS drops during handshake).
       // Note: thread/start and thread/resume use `sandbox` (SandboxMode string),
       // while turn/start uses `sandboxPolicy` (SandboxPolicy object) — these are
       // different Codex API fields by design.
-      if (this.options.threadId) {
-        // Resume an existing thread
-        const resumeResult = await this.transport.call("thread/resume", {
-          threadId: this.options.threadId,
-          model: this.options.model,
-          cwd: this.getExecutionCwd(),
-          approvalPolicy: this.mapApprovalPolicy(this.currentPermissionMode),
-          sandbox: this.options.sandbox || this.mapSandboxPolicy(this.currentPermissionMode),
-        }) as { thread: { id: string } };
-        this.threadId = resumeResult.thread.id;
-      } else {
-        // Start a new thread
-        const threadResult = await this.transport.call("thread/start", {
-          model: this.options.model,
-          cwd: this.getExecutionCwd(),
-          approvalPolicy: this.mapApprovalPolicy(this.currentPermissionMode),
-          sandbox: this.options.sandbox || this.mapSandboxPolicy(this.currentPermissionMode),
-        }) as { thread: { id: string } };
-        this.threadId = threadResult.thread.id;
+      let threadStarted = false;
+      let lastThreadError: unknown;
+
+      for (let attempt = 0; attempt < CodexAdapter.INIT_THREAD_MAX_RETRIES; attempt++) {
+        // Bail out early if the transport went away between retries
+        if (!this.transport.isConnected()) {
+          lastThreadError = new Error("Transport closed before thread start");
+          break;
+        }
+
+        try {
+          if (this.options.threadId) {
+            const resumeResult = await this.transport.call("thread/resume", {
+              threadId: this.options.threadId,
+              model: this.options.model,
+              cwd: this.getExecutionCwd(),
+              approvalPolicy: this.mapApprovalPolicy(this.currentPermissionMode),
+              sandbox: this.options.sandbox || this.mapSandboxPolicy(this.currentPermissionMode),
+            }) as { thread: { id: string } };
+            this.threadId = resumeResult.thread.id;
+          } else {
+            const threadResult = await this.transport.call("thread/start", {
+              model: this.options.model,
+              cwd: this.getExecutionCwd(),
+              approvalPolicy: this.mapApprovalPolicy(this.currentPermissionMode),
+              sandbox: this.options.sandbox || this.mapSandboxPolicy(this.currentPermissionMode),
+            }) as { thread: { id: string } };
+            this.threadId = threadResult.thread.id;
+          }
+          threadStarted = true;
+          break;
+        } catch (threadErr) {
+          lastThreadError = threadErr;
+          const isTransportClosed = threadErr instanceof Error && threadErr.message === "Transport closed";
+          if (!isTransportClosed || attempt >= CodexAdapter.INIT_THREAD_MAX_RETRIES - 1) {
+            break; // Non-transient error or last attempt — give up
+          }
+          const delay = CodexAdapter.INIT_THREAD_RETRY_BASE_MS * Math.pow(2, attempt);
+          console.warn(`[codex-adapter] thread start attempt ${attempt + 1} failed (Transport closed), retrying in ${delay}ms`);
+          await new Promise((r) => setTimeout(r, delay));
+        }
       }
+
+      if (!threadStarted) {
+        throw lastThreadError || new Error("Failed to start thread");
+      }
+
+      this.initialized = true;
+      console.log(`[codex-adapter] Session ${this.sessionId} initialized (threadId=${this.threadId})`);
 
       // Notify session metadata
       this.sessionMetaCb?.({
-        cliSessionId: this.threadId,
+        cliSessionId: this.threadId ?? undefined,
         model: this.options.model,
         cwd: this.options.cwd,
       });
@@ -622,14 +841,9 @@ export class CodexAdapter {
         this.updateRateLimits(result as Record<string, unknown>);
       }).catch(() => { /* best-effort */ });
 
-      // Flush any messages that were queued during initialization
-      if (this.pendingOutgoing.length > 0) {
-        console.log(`[codex-adapter] Flushing ${this.pendingOutgoing.length} queued message(s)`);
-        const queued = this.pendingOutgoing.splice(0);
-        for (const msg of queued) {
-          this.dispatchOutgoing(msg);
-        }
-      }
+      // Flush any messages that were queued during initialization, but only
+      // if the transport is still connected (avoids immediate "Transport closed").
+      this.flushPendingOutgoing();
     } catch (err) {
       const errorMsg = `Codex initialization failed: ${err}`;
       console.error(`[codex-adapter] ${errorMsg}`);
@@ -639,6 +853,8 @@ export class CodexAdapter {
       this.pendingOutgoing.length = 0;
       this.emit({ type: "error", message: errorMsg });
       this.initErrorCb?.(errorMsg);
+    } finally {
+      this.initInProgress = false;
     }
   }
 
@@ -690,7 +906,14 @@ export class CodexAdapter {
 
       this.currentTurnId = result.turn.id;
     } catch (err) {
-      this.emit({ type: "error", message: `Failed to start turn: ${err}` });
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (errMsg.startsWith("RPC timeout")) {
+        this.emit({ type: "error", message: "Codex is not responding. Try relaunching the session." });
+      } else if (errMsg === "Transport closed") {
+        this.emit({ type: "error", message: "Connection to Codex lost. Try relaunching the session." });
+      } else {
+        this.emit({ type: "error", message: `Failed to start turn: ${err}` });
+      }
     }
   }
 
@@ -712,6 +935,33 @@ export class CodexAdapter {
 
       const result = this.buildDynamicToolCallResponse(msg, pendingDynamic.toolName);
       await this.transport.respond(jsonRpcId, result);
+      return;
+    }
+
+    // ExitPlanMode requests need DynamicToolCallResponse + collaboration mode update
+    if (this.pendingExitPlanModeRequests.has(msg.request_id)) {
+      this.pendingExitPlanModeRequests.delete(msg.request_id);
+      this.pendingApprovals.delete(msg.request_id);
+
+      if (msg.behavior === "allow") {
+        // Exit plan mode: switch collaboration mode back to default
+        this.currentCollaborationModeKind = "default";
+        this.currentPermissionMode = this.lastNonPlanPermissionMode;
+        this.emit({
+          type: "session_update",
+          session: { permissionMode: this.currentPermissionMode },
+        });
+
+        await this.transport.respond(jsonRpcId, {
+          contentItems: [{ type: "inputText", text: "Plan approved. Exiting plan mode." }],
+          success: true,
+        });
+      } else {
+        await this.transport.respond(jsonRpcId, {
+          contentItems: [{ type: "inputText", text: "Plan denied by user." }],
+          success: false,
+        });
+      }
       return;
     }
 
@@ -764,7 +1014,12 @@ export class CodexAdapter {
         turnId: this.currentTurnId,
       });
     } catch (err) {
-      console.warn("[codex-adapter] Interrupt failed:", err);
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (errMsg.startsWith("RPC timeout")) {
+        this.emit({ type: "error", message: "Codex is not responding to interrupt. Try relaunching the session." });
+      } else {
+        console.warn("[codex-adapter] Interrupt failed:", err);
+      }
     }
   }
 
@@ -819,7 +1074,12 @@ export class CodexAdapter {
 
       this.emit({ type: "mcp_status", servers });
     } catch (err) {
-      this.emit({ type: "error", message: `Failed to get MCP status: ${err}` });
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (errMsg === "Transport closed") {
+        this.emit({ type: "error", message: "Connection to Codex lost. Cannot fetch MCP status." });
+      } else {
+        this.emit({ type: "error", message: `Failed to get MCP status: ${err}` });
+      }
     }
   }
 
@@ -1014,7 +1274,11 @@ export class CodexAdapter {
           this.handleMcpToolCallApproval(id, params);
           break;
         case "item/tool/call":
-          this.handleDynamicToolCall(id, params);
+          if ((params as Record<string, unknown>).tool === "ExitPlanMode") {
+            this.handleExitPlanModeRequest(id, params);
+          } else {
+            this.handleDynamicToolCall(id, params);
+          }
           break;
         case "item/tool/requestUserInput":
           this.handleUserInputRequest(id, params);
@@ -1250,6 +1514,35 @@ export class CodexAdapter {
     this.emit({ type: "permission_request", request: perm });
   }
 
+  private handleExitPlanModeRequest(jsonRpcId: number, params: Record<string, unknown>): void {
+    const callId = params.callId as string || `exitplan-${randomUUID()}`;
+    const toolArgs = params.arguments as Record<string, unknown> || {};
+    const requestId = `codex-exitplan-${randomUUID()}`;
+
+    console.log(`[codex-adapter] ExitPlanMode request received (callId=${callId})`);
+
+    this.pendingApprovals.set(requestId, jsonRpcId);
+    this.pendingExitPlanModeRequests.add(requestId);
+
+    // Emit tool_use with the bare "ExitPlanMode" name (no "dynamic:" prefix)
+    this.emitToolUseTracked(callId, "ExitPlanMode", toolArgs);
+
+    // Build permission request with the format ExitPlanModeDisplay expects
+    const perm: PermissionRequest = {
+      request_id: requestId,
+      tool_name: "ExitPlanMode",
+      input: {
+        plan: typeof toolArgs.plan === "string" ? toolArgs.plan : "",
+        allowedPrompts: Array.isArray(toolArgs.allowedPrompts) ? toolArgs.allowedPrompts : [],
+      },
+      description: "Plan approval requested",
+      tool_use_id: callId,
+      timestamp: Date.now(),
+    };
+
+    this.emit({ type: "permission_request", request: perm });
+  }
+
   private handleApplyPatchApproval(jsonRpcId: number, params: Record<string, unknown>): void {
     const requestId = `codex-patch-${randomUUID()}`;
     this.pendingApprovals.set(requestId, jsonRpcId);
@@ -1306,6 +1599,8 @@ export class CodexAdapter {
   private handleItemStarted(params: Record<string, unknown>): void {
     const item = params.item as CodexItem;
     if (!item) return;
+    const threadId = typeof params.threadId === "string" ? params.threadId : undefined;
+    const parentToolUseId = this.getParentToolUseIdForThread(threadId);
 
     switch (item.type) {
       case "agentMessage":
@@ -1327,7 +1622,7 @@ export class CodexAdapter {
               usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
             },
           },
-          parent_tool_use_id: null,
+          parent_tool_use_id: parentToolUseId,
         });
         // Also emit content_block_start
         this.emit({
@@ -1337,7 +1632,7 @@ export class CodexAdapter {
             index: 0,
             content_block: { type: "text", text: "" },
           },
-          parent_tool_use_id: null,
+          parent_tool_use_id: parentToolUseId,
         });
         break;
 
@@ -1395,6 +1690,29 @@ export class CodexAdapter {
       case "contextCompaction":
         this.emit({ type: "status_change", status: "compacting" });
         break;
+
+      case "collabAgentToolCall": {
+        const collab = item as CodexCollabAgentToolCallItem;
+        const receiverThreadIds = Array.isArray(collab.receiverThreadIds)
+          ? collab.receiverThreadIds.filter((id): id is string => typeof id === "string" && id.length > 0)
+          : [];
+        const prompt = typeof collab.prompt === "string" ? collab.prompt.trim() : "";
+        const description = prompt
+          || `${collab.tool || "agent"} (${receiverThreadIds.length || 1} agent${(receiverThreadIds.length || 1) === 1 ? "" : "s"})`;
+        this.emitToolUseStart(item.id, "Task", {
+          description,
+          subagent_type: collab.tool || "codex-collab",
+          codex_status: collab.status,
+          sender_thread_id: collab.senderThreadId || null,
+          receiver_thread_ids: receiverThreadIds,
+        }, parentToolUseId);
+        this.setSubagentThreadMappings(item.id, collab);
+        this.emitAssistantText(
+          `Started ${collab.tool || "collab"} for ${receiverThreadIds.length || 1} agent${(receiverThreadIds.length || 1) === 1 ? "" : "s"}.`,
+          item.id,
+        );
+        break;
+      }
 
       default:
         // userMessage is an echo of browser input and not needed in UI.
@@ -1578,6 +1896,8 @@ export class CodexAdapter {
   private handleAgentMessageDelta(params: Record<string, unknown>): void {
     const delta = params.delta as string;
     if (!delta) return;
+    const threadId = typeof params.threadId === "string" ? params.threadId : undefined;
+    const parentToolUseId = this.getParentToolUseIdForThread(threadId);
 
     this.streamingText += delta;
 
@@ -1589,7 +1909,7 @@ export class CodexAdapter {
         index: 0,
         delta: { type: "text_delta", text: delta },
       },
-      parent_tool_use_id: null,
+      parent_tool_use_id: parentToolUseId,
     });
   }
 
@@ -1601,6 +1921,8 @@ export class CodexAdapter {
   private handleItemCompleted(params: Record<string, unknown>): void {
     const item = params.item as CodexItem;
     if (!item) return;
+    const threadId = typeof params.threadId === "string" ? params.threadId : undefined;
+    const parentToolUseId = this.getParentToolUseIdForThread(threadId);
 
     switch (item.type) {
       case "agentMessage": {
@@ -1614,7 +1936,7 @@ export class CodexAdapter {
             type: "content_block_stop",
             index: 0,
           },
-          parent_tool_use_id: null,
+          parent_tool_use_id: parentToolUseId,
         });
         this.emit({
           type: "stream_event",
@@ -1623,7 +1945,7 @@ export class CodexAdapter {
             delta: { stop_reason: null }, // null, not "end_turn" — the turn may continue with tool calls
             usage: { output_tokens: 0 },
           },
-          parent_tool_use_id: null,
+          parent_tool_use_id: parentToolUseId,
         });
 
         // Emit the full assistant message
@@ -1638,7 +1960,7 @@ export class CodexAdapter {
             stop_reason: "end_turn",
             usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
           },
-          parent_tool_use_id: null,
+          parent_tool_use_id: parentToolUseId,
           timestamp: Date.now(),
         });
 
@@ -1760,6 +2082,27 @@ export class CodexAdapter {
       case "contextCompaction":
         this.emit({ type: "status_change", status: null });
         break;
+
+      case "collabAgentToolCall": {
+        const collab = item as CodexCollabAgentToolCallItem;
+        const receiverThreadIds = Array.isArray(collab.receiverThreadIds)
+          ? collab.receiverThreadIds.filter((id): id is string => typeof id === "string" && id.length > 0)
+          : [];
+        this.ensureToolUseEmitted(item.id, "Task", {
+          description: (typeof collab.prompt === "string" && collab.prompt.trim())
+            || `${collab.tool || "agent"} (${receiverThreadIds.length || 1} agent${(receiverThreadIds.length || 1) === 1 ? "" : "s"})`,
+          subagent_type: collab.tool || "codex-collab",
+          codex_status: collab.status,
+          sender_thread_id: collab.senderThreadId || null,
+          receiver_thread_ids: receiverThreadIds,
+        }, parentToolUseId);
+        const isError = collab.status === "failed";
+        const summary = this.summarizeCollabCall(collab);
+        this.emitToolResult(item.id, summary, isError);
+        this.emitAssistantText(summary, item.id);
+        this.clearSubagentThreadMappings(collab);
+        break;
+      }
 
       default:
         if (item.type !== "userMessage") {
@@ -1896,8 +2239,66 @@ export class CodexAdapter {
     this.browserMessageCb?.(msg);
   }
 
+  private getParentToolUseIdForThread(threadId?: string): string | null {
+    if (!threadId) return null;
+    return this.parentToolUseByThreadId.get(threadId) || null;
+  }
+
+  private setSubagentThreadMappings(parentToolUseId: string, collab: CodexCollabAgentToolCallItem): void {
+    const receiverThreadIds = Array.isArray(collab.receiverThreadIds)
+      ? collab.receiverThreadIds
+      : [];
+    for (const receiverThreadId of receiverThreadIds) {
+      if (typeof receiverThreadId === "string" && receiverThreadId.length > 0) {
+        this.parentToolUseByThreadId.set(receiverThreadId, parentToolUseId);
+      }
+    }
+  }
+
+  private clearSubagentThreadMappings(collab: CodexCollabAgentToolCallItem): void {
+    const receiverThreadIds = Array.isArray(collab.receiverThreadIds)
+      ? collab.receiverThreadIds
+      : [];
+    for (const receiverThreadId of receiverThreadIds) {
+      if (typeof receiverThreadId === "string" && receiverThreadId.length > 0) {
+        this.parentToolUseByThreadId.delete(receiverThreadId);
+      }
+    }
+  }
+
+  private summarizeCollabCall(collab: CodexCollabAgentToolCallItem): string {
+    const receiverCount = Array.isArray(collab.receiverThreadIds)
+      ? collab.receiverThreadIds.filter((id): id is string => typeof id === "string" && id.length > 0).length
+      : 0;
+    const statusText = collab.status === "completed"
+      ? "completed"
+      : collab.status === "failed"
+        ? "failed"
+        : "running";
+    const tool = collab.tool || "collab";
+    const count = receiverCount || 1;
+    return `${tool} ${statusText} for ${count} agent${count === 1 ? "" : "s"}`;
+  }
+
+  private emitAssistantText(text: string, parentToolUseId: string | null): void {
+    this.emit({
+      type: "assistant",
+      message: {
+        id: this.makeMessageId("agent_text"),
+        type: "message",
+        role: "assistant",
+        model: this.options.model || "",
+        content: [{ type: "text", text }],
+        stop_reason: null,
+        usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+      },
+      parent_tool_use_id: parentToolUseId,
+      timestamp: Date.now(),
+    });
+  }
+
   /** Emit an assistant message with a tool_use content block (no tracking). */
-  private emitToolUse(toolUseId: string, toolName: string, input: Record<string, unknown>): void {
+  private emitToolUse(toolUseId: string, toolName: string, input: Record<string, unknown>, parentToolUseId: string | null = null): void {
     console.log(`[codex-adapter] Emitting tool_use: ${toolName} id=${toolUseId}`);
     this.emit({
       type: "assistant",
@@ -1917,15 +2318,15 @@ export class CodexAdapter {
         stop_reason: null,
         usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
       },
-      parent_tool_use_id: null,
+      parent_tool_use_id: parentToolUseId,
       timestamp: Date.now(),
     });
   }
 
   /** Emit tool_use and track the ID so we don't double-emit. */
-  private emitToolUseTracked(toolUseId: string, toolName: string, input: Record<string, unknown>): void {
+  private emitToolUseTracked(toolUseId: string, toolName: string, input: Record<string, unknown>, parentToolUseId: string | null = null): void {
     this.emittedToolUseIds.add(toolUseId);
-    this.emitToolUse(toolUseId, toolName, input);
+    this.emitToolUse(toolUseId, toolName, input, parentToolUseId);
   }
 
   /**
@@ -1933,7 +2334,12 @@ export class CodexAdapter {
    * This matches Claude Code's streaming pattern and ensures the frontend sees the tool block
    * even during active streaming.
    */
-  private emitToolUseStart(toolUseId: string, toolName: string, input: Record<string, unknown>): void {
+  private emitToolUseStart(
+    toolUseId: string,
+    toolName: string,
+    input: Record<string, unknown>,
+    parentToolUseId: string | null = null,
+  ): void {
     // Emit stream event for tool_use start (matches Claude Code pattern)
     this.emit({
       type: "stream_event",
@@ -1942,16 +2348,21 @@ export class CodexAdapter {
         index: 0,
         content_block: { type: "tool_use", id: toolUseId, name: toolName, input: {} },
       },
-      parent_tool_use_id: null,
+      parent_tool_use_id: parentToolUseId,
     });
-    this.emitToolUseTracked(toolUseId, toolName, input);
+    this.emitToolUseTracked(toolUseId, toolName, input, parentToolUseId);
   }
 
   /** Emit tool_use only if item/started was never received for this ID. */
-  private ensureToolUseEmitted(toolUseId: string, toolName: string, input: Record<string, unknown>): void {
+  private ensureToolUseEmitted(
+    toolUseId: string,
+    toolName: string,
+    input: Record<string, unknown>,
+    parentToolUseId: string | null = null,
+  ): void {
     if (!this.emittedToolUseIds.has(toolUseId)) {
       console.log(`[codex-adapter] Backfilling tool_use for ${toolName} (id=${toolUseId}) — item/started was missing`);
-      this.emitToolUseTracked(toolUseId, toolName, input);
+      this.emitToolUseTracked(toolUseId, toolName, input, parentToolUseId);
     }
   }
 
@@ -2083,56 +2494,6 @@ export class CodexAdapter {
     if (Array.isArray(config.args)) out.args = config.args;
     if (config.env) out.env = config.env;
     if (typeof config.url === "string") out.url = config.url;
-    return out;
-  }
-
-  private normalizeRawMcpServerConfig(value: unknown): Record<string, unknown> {
-    const cfg = this.asRecord(value) || {};
-    const out: Record<string, unknown> = {};
-
-    // Keep only fields supported by Codex raw MCP config schema
-    if (typeof cfg.command === "string") out.command = cfg.command;
-    if (Array.isArray(cfg.args)) out.args = cfg.args.filter((a) => typeof a === "string");
-    if (typeof cfg.cwd === "string") out.cwd = cfg.cwd;
-    if (typeof cfg.url === "string") out.url = cfg.url;
-    if (typeof cfg.enabled === "boolean") out.enabled = cfg.enabled;
-    if (typeof cfg.required === "boolean") out.required = cfg.required;
-
-    const env = this.asRecord(cfg.env);
-    if (env) out.env = Object.fromEntries(
-      Object.entries(env).filter(([, v]) => typeof v === "string"),
-    );
-
-    const envHttpHeaders = this.asRecord(cfg.env_http_headers);
-    if (envHttpHeaders) out.env_http_headers = Object.fromEntries(
-      Object.entries(envHttpHeaders).filter(([, v]) => typeof v === "string"),
-    );
-
-    const httpHeaders = this.asRecord(cfg.http_headers);
-    if (httpHeaders) out.http_headers = Object.fromEntries(
-      Object.entries(httpHeaders).filter(([, v]) => typeof v === "string"),
-    );
-
-    const asStringArray = (arr: unknown): string[] | undefined =>
-      Array.isArray(arr)
-        ? arr.filter((x): x is string => typeof x === "string")
-        : undefined;
-
-    const disabledTools = asStringArray(cfg.disabled_tools);
-    if (disabledTools) out.disabled_tools = disabledTools;
-    const enabledTools = asStringArray(cfg.enabled_tools);
-    if (enabledTools) out.enabled_tools = enabledTools;
-    const envVars = asStringArray(cfg.env_vars);
-    if (envVars) out.env_vars = envVars;
-    const scopes = asStringArray(cfg.scopes);
-    if (scopes) out.scopes = scopes;
-
-    if (typeof cfg.startup_timeout_ms === "number") out.startup_timeout_ms = cfg.startup_timeout_ms;
-    if (typeof cfg.startup_timeout_sec === "number") out.startup_timeout_sec = cfg.startup_timeout_sec;
-    if (typeof cfg.tool_timeout_sec === "number") out.tool_timeout_sec = cfg.tool_timeout_sec;
-    if (typeof cfg.bearer_token === "string") out.bearer_token = cfg.bearer_token;
-    if (typeof cfg.bearer_token_env_var === "string") out.bearer_token_env_var = cfg.bearer_token_env_var;
-
     return out;
   }
 

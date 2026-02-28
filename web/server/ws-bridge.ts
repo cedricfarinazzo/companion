@@ -14,6 +14,7 @@ import type {
   SessionState,
   PermissionRequest,
   BackendType,
+  McpServerConfig,
 } from "./session-types.js";
 import type { SessionStore } from "./session-store.js";
 import type { CodexAdapter } from "./codex-adapter.js";
@@ -40,6 +41,7 @@ import {
   handleInterrupt,
   handleSetModel,
   handleSetPermissionMode,
+  handleSetAiValidation,
   handleControlResponse,
   sendControlRequest,
   handleMcpGetStatus,
@@ -52,6 +54,9 @@ import {
   handleSessionAck,
   handlePermissionResponse,
 } from "./ws-bridge-browser.js";
+import { validatePermission } from "./ai-validator.js";
+import { getSettings } from "./settings-manager.js";
+import { getEffectiveAiValidation } from "./ai-validation-settings.js";
 
 // ─── Bridge ───────────────────────────────────────────────────────────────────
 
@@ -68,6 +73,7 @@ export class WsBridge {
     "mcp_toggle",
     "mcp_reconnect",
     "mcp_set_servers",
+    "set_ai_validation",
   ]);
   private sessions = new Map<string, Session>();
   private store: SessionStore | null = null;
@@ -574,7 +580,7 @@ export class WsBridge {
   }
 
   /** Send a user message into a session programmatically (no browser required).
-   *  Used by the cron scheduler to send prompts to autonomous sessions. */
+   *  Used by the cron scheduler and agent executor to send prompts to autonomous sessions. */
   injectUserMessage(sessionId: string, content: string): void {
     const session = this.sessions.get(sessionId);
     if (!session) {
@@ -582,6 +588,17 @@ export class WsBridge {
       return;
     }
     this.routeBrowserMessage(session, { type: "user_message", content });
+  }
+
+  /** Configure MCP servers on a session programmatically (no browser required).
+   *  Used by the agent executor to set up MCP servers after CLI connects. */
+  injectMcpSetServers(sessionId: string, servers: Record<string, McpServerConfig>): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      console.error(`[ws-bridge] Cannot inject MCP servers: session ${sessionId} not found`);
+      return;
+    }
+    this.routeBrowserMessage(session, { type: "mcp_set_servers", servers });
   }
 
   handleBrowserClose(ws: ServerWebSocket<SocketData>) {
@@ -878,7 +895,7 @@ export class WsBridge {
     });
   }
 
-  private handleControlRequest(session: Session, msg: CLIControlRequestMessage) {
+  private async handleControlRequest(session: Session, msg: CLIControlRequestMessage) {
     if (msg.request.subtype === "can_use_tool") {
       const perm: PermissionRequest = {
         request_id: msg.request_id,
@@ -890,6 +907,43 @@ export class WsBridge {
         agent_id: msg.request.agent_id,
         timestamp: Date.now(),
       };
+
+      // AI Validation Mode: evaluate the tool call before showing to user
+      const aiSettings = getEffectiveAiValidation(session.state);
+      if (
+        aiSettings.enabled
+        && aiSettings.anthropicApiKey
+        && msg.request.tool_name !== "AskUserQuestion"
+        && msg.request.tool_name !== "ExitPlanMode"
+      ) {
+        try {
+          const result = await validatePermission(
+            msg.request.tool_name,
+            msg.request.input,
+            msg.request.description,
+          );
+          perm.ai_validation = {
+            verdict: result.verdict,
+            reason: result.reason,
+            ruleBasedOnly: result.ruleBasedOnly,
+          };
+
+          // Auto-approve safe tools
+          if (result.verdict === "safe" && aiSettings.autoApprove) {
+            this.autoRespondPermission(session, msg.request_id, perm, "allow", result.reason);
+            return;
+          }
+
+          // Auto-deny dangerous tools
+          if (result.verdict === "dangerous" && aiSettings.autoDeny) {
+            this.autoRespondPermission(session, msg.request_id, perm, "deny", result.reason);
+            return;
+          }
+        } catch (err) {
+          console.warn("[ws-bridge] AI validation error, falling through to manual:", err);
+        }
+      }
+
       session.pendingPermissions.set(msg.request_id, perm);
 
       this.broadcastToBrowsers(session, {
@@ -898,6 +952,34 @@ export class WsBridge {
       });
       this.persistSession(session);
     }
+  }
+
+  private autoRespondPermission(
+    session: Session,
+    requestId: string,
+    perm: PermissionRequest,
+    behavior: "allow" | "deny",
+    reason: string,
+  ): void {
+    // Notify browsers that AI auto-handled this permission
+    this.broadcastToBrowsers(session, {
+      type: "permission_auto_resolved",
+      request: perm,
+      behavior,
+      reason,
+    });
+
+    // Send the control_response to CLI
+    handlePermissionResponse(
+      session,
+      {
+        type: "permission_response",
+        request_id: requestId,
+        behavior,
+        message: behavior === "deny" ? `AI validation: ${reason}` : undefined,
+      },
+      this.sendToCLI.bind(this),
+    );
   }
 
   private handleToolProgress(session: Session, msg: CLIToolProgressMessage) {
@@ -1037,6 +1119,19 @@ export class WsBridge {
 
       case "set_permission_mode":
         handleSetPermissionMode(session, msg.mode, this.sendToCLI.bind(this));
+        break;
+
+      case "set_ai_validation":
+        handleSetAiValidation(session, msg);
+        this.persistSession(session);
+        this.broadcastToBrowsers(session, {
+          type: "session_update",
+          session: {
+            aiValidationEnabled: session.state.aiValidationEnabled,
+            aiValidationAutoApprove: session.state.aiValidationAutoApprove,
+            aiValidationAutoDeny: session.state.aiValidationAutoDeny,
+          },
+        });
         break;
 
       case "mcp_get_status":

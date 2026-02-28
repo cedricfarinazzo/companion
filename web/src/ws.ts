@@ -1,5 +1,5 @@
 import { useStore } from "./store.js";
-import type { BrowserIncomingMessage, BrowserOutgoingMessage, ContentBlock, ChatMessage, TaskItem, SdkSessionInfo, McpServerConfig } from "./types.js";
+import type { BrowserIncomingMessage, BrowserOutgoingMessage, ContentBlock, ChatMessage, TaskItem, ProcessItem, ProcessStatus, SdkSessionInfo, McpServerConfig } from "./types.js";
 import { generateUniqueSessionName } from "./utils/names.js";
 import { playNotificationSound } from "./utils/notification-sound.js";
 
@@ -127,6 +127,67 @@ function extractChangedFilesFromBlocks(sessionId: string, blocks: ContentBlock[]
     }
   }
   if (dirty) store.bumpChangedFilesTick(sessionId);
+}
+
+/** Pending background Bash calls awaiting their tool_result (keyed by sessionId → toolUseId) */
+const pendingBackgroundBash = new Map<string, Map<string, { command: string; description: string; startedAt: number }>>();
+
+const BG_RESULT_REGEX = /Command running in background with ID:\s*(\S+)\.\s*Output is being written to:\s*(\S+)/;
+
+function extractProcessesFromBlocks(sessionId: string, blocks: ContentBlock[]) {
+  const store = useStore.getState();
+
+  for (const block of blocks) {
+    // Phase 1: Detect Bash tool_use with run_in_background
+    if (block.type === "tool_use" && block.name === "Bash") {
+      const input = block.input as Record<string, unknown>;
+      if (input.run_in_background === true) {
+        let sessionPending = pendingBackgroundBash.get(sessionId);
+        if (!sessionPending) {
+          sessionPending = new Map();
+          pendingBackgroundBash.set(sessionId, sessionPending);
+        }
+        sessionPending.set(block.id, {
+          command: (input.command as string) || "",
+          description: (input.description as string) || "",
+          startedAt: Date.now(),
+        });
+      }
+    }
+
+    // Phase 2: Match tool_result to a pending background Bash
+    if (block.type === "tool_result") {
+      const toolUseId = block.tool_use_id;
+      const sessionPending = pendingBackgroundBash.get(sessionId);
+      const pending = sessionPending?.get(toolUseId);
+      if (sessionPending && pending) {
+        const content = typeof block.content === "string"
+          ? block.content
+          : Array.isArray(block.content)
+            ? block.content.map((b) => ("text" in b ? (b as { text: string }).text : "")).join("")
+            : "";
+
+        const match = content.match(BG_RESULT_REGEX);
+        if (match) {
+          const processItem: ProcessItem = {
+            taskId: match[1],
+            toolUseId,
+            command: pending.command,
+            description: pending.description,
+            outputFile: match[2],
+            status: "running",
+            startedAt: pending.startedAt,
+          };
+          store.addProcess(sessionId, processItem);
+        }
+
+        sessionPending.delete(toolUseId);
+        if (sessionPending.size === 0) {
+          pendingBackgroundBash.delete(sessionId);
+        }
+      }
+    }
+  }
 }
 
 function sendBrowserNotification(title: string, body: string, tag: string) {
@@ -259,11 +320,13 @@ const IDEMPOTENT_OUTGOING_TYPES = new Set<BrowserOutgoingMessage["type"]>([
   "mcp_toggle",
   "mcp_reconnect",
   "mcp_set_servers",
+  "set_ai_validation",
 ]);
 
 function getWsUrl(sessionId: string): string {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  return `${proto}//${location.host}/ws/browser/${sessionId}`;
+  const token = localStorage.getItem("companion_auth_token") || "";
+  return `${proto}//${location.host}/ws/browser/${sessionId}?token=${encodeURIComponent(token)}`;
 }
 
 function getLastSeqStorageKey(sessionId: string): string {
@@ -455,6 +518,7 @@ function handleParsedMessage(
       if (msg.content?.length) {
         extractTasksFromBlocks(sessionId, msg.content);
         extractChangedFilesFromBlocks(sessionId, msg.content);
+        extractProcessesFromBlocks(sessionId, msg.content);
       }
 
       break;
@@ -586,12 +650,23 @@ function handleParsedMessage(
         }];
         extractTasksFromBlocks(sessionId, permBlocks);
         extractChangedFilesFromBlocks(sessionId, permBlocks);
+        extractProcessesFromBlocks(sessionId, permBlocks);
       }
       break;
     }
 
     case "permission_cancelled": {
       store.removePermission(sessionId, data.request_id);
+      break;
+    }
+
+    case "permission_auto_resolved": {
+      store.addAiResolvedPermission(sessionId, {
+        request: data.request,
+        behavior: data.behavior,
+        reason: data.reason,
+        timestamp: Date.now(),
+      });
       break;
     }
 
@@ -614,6 +689,18 @@ function handleParsedMessage(
     }
 
     case "system_event": {
+      // Update structured process state from task_notification
+      if (data.event?.subtype === "task_notification") {
+        const { task_id, status, summary: taskSummary } = data.event;
+        if (task_id && status) {
+          store.updateProcess(sessionId, task_id, {
+            status: status as ProcessStatus,
+            completedAt: Date.now(),
+            summary: taskSummary || undefined,
+          });
+        }
+      }
+
       const summary = summarizeSystemEvent(data.event);
       if (!summary) break;
       store.appendMessage(sessionId, {
@@ -718,10 +805,11 @@ function handleParsedMessage(
           } else {
             chatMessages[existingIndex] = mergeAssistantMessage(chatMessages[existingIndex], assistantMsg);
           }
-          // Also extract tasks and changed files from history
+          // Also extract tasks, changed files, and background processes from history
           if (msg.content?.length) {
             extractTasksFromBlocks(sessionId, msg.content);
             extractChangedFilesFromBlocks(sessionId, msg.content);
+            extractProcessesFromBlocks(sessionId, msg.content);
           }
         } else if (histMsg.type === "result") {
           const r = histMsg.data;
@@ -733,6 +821,27 @@ function handleParsedMessage(
               timestamp: Date.now(),
             });
           }
+          // Track cost/turns from history result, same as the live result handler
+          const resultUpdates: Partial<{ total_cost_usd: number; num_turns: number; context_used_percent: number; total_lines_added: number; total_lines_removed: number }> = {
+            total_cost_usd: r.total_cost_usd,
+            num_turns: r.num_turns,
+          };
+          if (typeof r.total_lines_added === "number") {
+            resultUpdates.total_lines_added = r.total_lines_added;
+          }
+          if (typeof r.total_lines_removed === "number") {
+            resultUpdates.total_lines_removed = r.total_lines_removed;
+          }
+          if (r.modelUsage) {
+            for (const usage of Object.values(r.modelUsage)) {
+              if ((usage as { contextWindow: number; inputTokens: number; outputTokens: number }).contextWindow > 0) {
+                const u = usage as { contextWindow: number; inputTokens: number; outputTokens: number };
+                const pct = Math.round(((u.inputTokens + u.outputTokens) / u.contextWindow) * 100);
+                resultUpdates.context_used_percent = Math.max(0, Math.min(pct, 100));
+              }
+            }
+          }
+          store.updateSession(sessionId, resultUpdates);
         } else if (histMsg.type === "system_event") {
           const summary = summarizeSystemEvent(histMsg.event);
           if (!summary) continue;
@@ -768,6 +877,18 @@ function handleParsedMessage(
           merged.sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
           store.setMessages(sessionId, merged);
         }
+      }
+      // Fix: if the last history message is a `result`, the session's last turn
+      // is complete. Clear any stale streaming state that event_replay might not
+      // correct (e.g. when `result` was pruned from the 600-event buffer).
+      const lastHistMsg = data.messages[data.messages.length - 1];
+      if (lastHistMsg?.type === "result") {
+        clearStreamingDraftMessage(sessionId);
+        store.setStreaming(sessionId, null);
+        streamingPhaseBySession.delete(sessionId);
+        store.setStreamingStats(sessionId, null);
+        store.clearToolProgress(sessionId);
+        store.setSessionStatus(sessionId, "idle");
       }
       break;
     }
@@ -854,6 +975,7 @@ export function disconnectSession(sessionId: string) {
     sockets.delete(sessionId);
   }
   processedToolUseIds.delete(sessionId);
+  pendingBackgroundBash.delete(sessionId);
   taskCounters.delete(sessionId);
   streamingPhaseBySession.delete(sessionId);
   streamingDraftMessageIdBySession.delete(sessionId);
@@ -905,6 +1027,7 @@ export function sendToSession(sessionId: string, msg: BrowserOutgoingMessage) {
       case "mcp_toggle":
       case "mcp_reconnect":
       case "mcp_set_servers":
+      case "set_ai_validation":
         if (!msg.client_msg_id) {
           outgoing = { ...msg, client_msg_id: nextClientMsgId() };
         }
@@ -930,4 +1053,15 @@ export function sendMcpReconnect(sessionId: string, serverName: string) {
 
 export function sendMcpSetServers(sessionId: string, servers: Record<string, McpServerConfig>) {
   sendToSession(sessionId, { type: "mcp_set_servers", servers });
+}
+
+export function sendSetAiValidation(
+  sessionId: string,
+  settings: {
+    aiValidationEnabled?: boolean | null;
+    aiValidationAutoApprove?: boolean | null;
+    aiValidationAutoDeny?: boolean | null;
+  },
+) {
+  sendToSession(sessionId, { type: "set_ai_validation", ...settings });
 }

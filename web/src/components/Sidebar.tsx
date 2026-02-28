@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useStore } from "../store.js";
-import { api } from "../api.js";
+import { api, type ArchiveInfo } from "../api.js";
+import { ArchiveLinearModal, type LinearTransitionChoice } from "./ArchiveLinearModal.js";
 import { connectSession, connectAllSessions, disconnectSession } from "../ws.js";
 import { navigateToSession, navigateHome, parseHash } from "../utils/routing.js";
 import { ProjectGroup } from "./ProjectGroup.js";
@@ -54,12 +55,12 @@ const NAV_ITEMS: NavItem[] = [
     iconPath: "M8 1a2 2 0 012 2v1h2a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6a2 2 0 012-2h2V3a2 2 0 012-2zm0 1.5a.5.5 0 00-.5.5v1h1V3a.5.5 0 00-.5-.5zM4 5.5a.5.5 0 00-.5.5v6a.5.5 0 00.5.5h8a.5.5 0 00.5-.5V6a.5.5 0 00-.5-.5H4z",
   },
   {
-    id: "scheduled",
-    label: "Scheduled",
-    shortLabel: "Sched.",
-    hash: "#/scheduled",
+    id: "agents",
+    label: "Agents",
+    shortLabel: "Agents",
+    hash: "#/agents",
     viewBox: "0 0 16 16",
-    iconPath: "M8 2a6 6 0 100 12A6 6 0 008 2zM0 8a8 8 0 1116 0A8 8 0 010 8zm9-3a1 1 0 10-2 0v3a1 1 0 00.293.707l2 2a1 1 0 001.414-1.414L9 7.586V5z",
+    iconPath: "M8 1.5a2.5 2.5 0 00-2.5 2.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5S9.38 1.5 8 1.5zM4 8a4 4 0 00-4 4v1.5a.5.5 0 00.5.5h15a.5.5 0 00.5-.5V12a4 4 0 00-4-4H4z",
   },
   {
     id: "settings",
@@ -78,6 +79,11 @@ export function Sidebar() {
   const [editingName, setEditingName] = useState("");
   const [showArchived, setShowArchived] = useState(false);
   const [confirmArchiveId, setConfirmArchiveId] = useState<string | null>(null);
+  const [archiveModalSessionId, setArchiveModalSessionId] = useState<string | null>(null);
+  const [archiveModalInfo, setArchiveModalInfo] = useState<ArchiveInfo | null>(null);
+  const [archiveModalContainerized, setArchiveModalContainerized] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [confirmDeleteAll, setConfirmDeleteAll] = useState(false);
   const [hash, setHash] = useState(() => (typeof window !== "undefined" ? window.location.hash : ""));
   const editInputRef = useRef<HTMLInputElement>(null);
   const sessions = useStore((s) => s.sessions);
@@ -91,6 +97,7 @@ export function Sidebar() {
   const recentlyRenamed = useStore((s) => s.recentlyRenamed);
   const clearRecentlyRenamed = useStore((s) => s.clearRecentlyRenamed);
   const pendingPermissions = useStore((s) => s.pendingPermissions);
+  const linkedLinearIssues = useStore((s) => s.linkedLinearIssues);
   const collapsedProjects = useStore((s) => s.collapsedProjects);
   const toggleProjectCollapse = useStore((s) => s.toggleProjectCollapse);
   const route = parseHash(hash);
@@ -184,8 +191,12 @@ export function Sidebar() {
     setEditingName(currentName);
   }
 
-  const handleDeleteSession = useCallback(async (e: React.MouseEvent, sessionId: string) => {
+  const handleDeleteSession = useCallback((e: React.MouseEvent, sessionId: string) => {
     e.stopPropagation();
+    setConfirmDeleteId(sessionId);
+  }, []);
+
+  const doDelete = useCallback(async (sessionId: string) => {
     try {
       disconnectSession(sessionId);
       await api.deleteSession(sessionId);
@@ -198,23 +209,82 @@ export function Sidebar() {
     removeSession(sessionId);
   }, [removeSession]);
 
-  const handleArchiveSession = useCallback((e: React.MouseEvent, sessionId: string) => {
+  const confirmDelete = useCallback(() => {
+    if (confirmDeleteId) {
+      doDelete(confirmDeleteId);
+      setConfirmDeleteId(null);
+    }
+  }, [confirmDeleteId, doDelete]);
+
+  const cancelDelete = useCallback(() => {
+    setConfirmDeleteId(null);
+  }, []);
+
+  const handleDeleteAllArchived = useCallback(() => {
+    setConfirmDeleteAll(true);
+  }, []);
+
+  const confirmDeleteAllArchived = useCallback(async () => {
+    setConfirmDeleteAll(false);
+    // Get fresh list of archived session IDs
+    const store = useStore.getState();
+    const allIds = new Set<string>();
+    for (const id of store.sessions.keys()) allIds.add(id);
+    for (const s of store.sdkSessions) allIds.add(s.sessionId);
+    const archivedIds = Array.from(allIds).filter((id) => {
+      const sdkInfo = store.sdkSessions.find((s) => s.sessionId === id);
+      return sdkInfo?.archived ?? false;
+    });
+    for (const id of archivedIds) {
+      await doDelete(id);
+    }
+  }, [doDelete]);
+
+  const cancelDeleteAll = useCallback(() => {
+    setConfirmDeleteAll(false);
+  }, []);
+
+  const handleArchiveSession = useCallback(async (e: React.MouseEvent, sessionId: string) => {
     e.stopPropagation();
-    // Check if session uses a container — if so, ask for confirmation
     const sdkInfo = sdkSessions.find((s) => s.sessionId === sessionId);
     const bridgeState = sessions.get(sessionId);
     const isContainerized = bridgeState?.is_containerized || !!sdkInfo?.containerId || false;
+
+    // Check if session has a linked non-done Linear issue
+    const linkedIssue = linkedLinearIssues.get(sessionId);
+    const stateType = (linkedIssue?.stateType || "").toLowerCase();
+    const isIssueDone = stateType === "completed" || stateType === "canceled" || stateType === "cancelled";
+
+    if (linkedIssue && !isIssueDone) {
+      // Fetch archive info (backlog availability, configured transition state)
+      try {
+        const info = await api.getArchiveInfo(sessionId);
+        if (info.issueNotDone) {
+          setArchiveModalSessionId(sessionId);
+          setArchiveModalInfo(info);
+          setArchiveModalContainerized(isContainerized);
+          return;
+        }
+      } catch {
+        // Fall through to normal archive flow on error
+      }
+    }
+
+    // No linked non-done issue — use existing container-only confirmation or direct archive
     if (isContainerized) {
       setConfirmArchiveId(sessionId);
       return;
     }
     doArchive(sessionId);
-  }, [sdkSessions, sessions]);
+  }, [sdkSessions, sessions, linkedLinearIssues]);
 
-  const doArchive = useCallback(async (sessionId: string, force?: boolean) => {
+  const doArchive = useCallback(async (sessionId: string, force?: boolean, linearTransition?: LinearTransitionChoice) => {
     try {
       disconnectSession(sessionId);
-      await api.archiveSession(sessionId, force ? { force: true } : undefined);
+      const opts: { force?: boolean; linearTransition?: LinearTransitionChoice } = {};
+      if (force) opts.force = true;
+      if (linearTransition && linearTransition !== "none") opts.linearTransition = linearTransition;
+      await api.archiveSession(sessionId, Object.keys(opts).length > 0 ? opts : undefined);
     } catch {
       // best-effort
     }
@@ -239,6 +309,19 @@ export function Sidebar() {
 
   const cancelArchive = useCallback(() => {
     setConfirmArchiveId(null);
+  }, []);
+
+  const handleArchiveModalConfirm = useCallback((choice: LinearTransitionChoice, force?: boolean) => {
+    if (archiveModalSessionId) {
+      doArchive(archiveModalSessionId, force, choice);
+      setArchiveModalSessionId(null);
+      setArchiveModalInfo(null);
+    }
+  }, [archiveModalSessionId, doArchive]);
+
+  const handleArchiveModalCancel = useCallback(() => {
+    setArchiveModalSessionId(null);
+    setArchiveModalInfo(null);
   }, []);
 
   const handleUnarchiveSession = useCallback(async (e: React.MouseEvent, sessionId: string) => {
@@ -284,15 +367,19 @@ export function Sidebar() {
       permCount: pendingPermissions.get(id)?.size ?? 0,
       cronJobId: bridgeState?.cronJobId || sdkInfo?.cronJobId,
       cronJobName: bridgeState?.cronJobName || sdkInfo?.cronJobName,
+      agentId: bridgeState?.agentId || sdkInfo?.agentId,
+      agentName: bridgeState?.agentName || sdkInfo?.agentName,
     };
   }).sort((a, b) => b.createdAt - a.createdAt);
 
-  const activeSessions = allSessionList.filter((s) => !s.archived && !s.cronJobId);
+  const activeSessions = allSessionList.filter((s) => !s.archived && !s.cronJobId && !s.agentId);
   const cronSessions = allSessionList.filter((s) => !s.archived && !!s.cronJobId);
+  const agentSessions = allSessionList.filter((s) => !s.archived && !!s.agentId);
   const archivedSessions = allSessionList.filter((s) => s.archived);
   const currentSession = currentSessionId ? allSessionList.find((s) => s.id === currentSessionId) : null;
   const logoSrc = currentSession?.backendType === "codex" ? "/logo-codex.svg" : currentSession?.backendType === "copilot" ? "/logo-copilot.svg" : "/logo.svg";
   const [showCronSessions, setShowCronSessions] = useState(true);
+  const [showAgentSessions, setShowAgentSessions] = useState(true);
 
   // Group active sessions by project
   const projectGroups = useMemo(
@@ -317,7 +404,7 @@ export function Sidebar() {
   };
 
   return (
-    <aside className="w-[260px] h-full flex flex-col bg-cc-sidebar border-r border-cc-border">
+    <aside className="w-full md:w-[260px] h-full flex flex-col bg-cc-sidebar">
       {/* Header */}
       <div className="p-3.5 pb-2">
         <div className="flex items-center gap-2.5">
@@ -327,10 +414,20 @@ export function Sidebar() {
             onClick={handleNewSession}
             title="New Session"
             aria-label="New Session"
-            className="ml-auto w-7 h-7 rounded-lg bg-cc-primary hover:bg-cc-primary-hover text-white flex items-center justify-center transition-colors duration-150 cursor-pointer"
+            className="ml-auto hidden md:flex w-8 h-8 rounded-lg bg-cc-primary hover:bg-cc-primary-hover text-white items-center justify-center transition-colors duration-150 cursor-pointer"
           >
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2.5" className="w-3.5 h-3.5">
               <path d="M8 3v10M3 8h10" />
+            </svg>
+          </button>
+          {/* Close button — mobile only (sidebar is full-width on mobile, so no backdrop to tap) */}
+          <button
+            onClick={() => useStore.getState().setSidebarOpen(false)}
+            aria-label="Close sidebar"
+            className="md:hidden ml-auto w-8 h-8 rounded-lg flex items-center justify-center text-cc-muted hover:text-cc-fg hover:bg-cc-hover transition-colors cursor-pointer"
+          >
+            <svg viewBox="0 0 16 16" fill="currentColor" className="w-4 h-4">
+              <path d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z" />
             </svg>
           </button>
         </div>
@@ -390,7 +487,7 @@ export function Sidebar() {
             ))}
 
             {cronSessions.length > 0 && (
-              <div className="mt-2 pt-2 border-t border-cc-border">
+              <div className="mt-2 pt-2">
                 <button
                   onClick={() => setShowCronSessions(!showCronSessions)}
                   className="w-full px-3 py-1.5 text-[11px] font-medium text-violet-400 uppercase tracking-wider flex items-center gap-1.5 hover:text-violet-300 transition-colors cursor-pointer"
@@ -421,17 +518,60 @@ export function Sidebar() {
               </div>
             )}
 
-            {archivedSessions.length > 0 && (
+            {agentSessions.length > 0 && (
               <div className="mt-2 pt-2 border-t border-cc-border">
                 <button
-                  onClick={() => setShowArchived(!showArchived)}
-                  className="w-full px-3 py-1.5 text-[11px] font-medium text-cc-muted uppercase tracking-wider flex items-center gap-1.5 hover:text-cc-fg transition-colors cursor-pointer"
+                  onClick={() => setShowAgentSessions(!showAgentSessions)}
+                  className="w-full px-3 py-1.5 text-[11px] font-medium text-emerald-400 uppercase tracking-wider flex items-center gap-1.5 hover:text-emerald-300 transition-colors cursor-pointer"
                 >
-                  <svg viewBox="0 0 16 16" fill="currentColor" className={`w-3 h-3 transition-transform ${showArchived ? "rotate-90" : ""}`}>
+                  <svg viewBox="0 0 16 16" fill="currentColor" className={`w-3 h-3 transition-transform ${showAgentSessions ? "rotate-90" : ""}`}>
                     <path d="M6 4l4 4-4 4" />
                   </svg>
-                  Archived ({archivedSessions.length})
+                  <svg viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3 opacity-60">
+                    <path d="M8 1.5a2.5 2.5 0 00-2.5 2.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5S9.38 1.5 8 1.5zM4 8a4 4 0 00-4 4v1.5a.5.5 0 00.5.5h15a.5.5 0 00.5-.5V12a4 4 0 00-4-4H4z" />
+                  </svg>
+                  Agent Runs ({agentSessions.length})
                 </button>
+                {showAgentSessions && (
+                  <div className="space-y-0.5 mt-1">
+                    {agentSessions.map((s) => (
+                      <SessionItem
+                        key={s.id}
+                        session={s}
+                        isActive={currentSessionId === s.id}
+                        sessionName={sessionNames.get(s.id)}
+                        permCount={pendingPermissions.get(s.id)?.size ?? 0}
+                        isRecentlyRenamed={recentlyRenamed.has(s.id)}
+                        {...sessionItemProps}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {archivedSessions.length > 0 && (
+              <div className="mt-2 pt-2 border-t border-cc-border/50">
+                <div className="flex items-center">
+                  <button
+                    onClick={() => setShowArchived(!showArchived)}
+                    className="flex-1 px-3 py-1.5 text-[11px] font-medium text-cc-muted uppercase tracking-wider flex items-center gap-1.5 hover:text-cc-fg transition-colors cursor-pointer"
+                  >
+                    <svg viewBox="0 0 16 16" fill="currentColor" className={`w-3 h-3 transition-transform ${showArchived ? "rotate-90" : ""}`}>
+                      <path d="M6 4l4 4-4 4" />
+                    </svg>
+                    Archived ({archivedSessions.length})
+                  </button>
+                  {showArchived && archivedSessions.length > 1 && (
+                    <button
+                      onClick={handleDeleteAllArchived}
+                      className="px-2 py-1 mr-1 text-[10px] text-red-400 hover:text-red-500 hover:bg-red-500/10 rounded-md transition-colors cursor-pointer"
+                      title="Delete all archived sessions"
+                    >
+                      Delete all
+                    </button>
+                  )}
+                </div>
                 {showArchived && (
                   <div className="space-y-0.5 mt-1">
                     {archivedSessions.map((s) => (
@@ -454,8 +594,22 @@ export function Sidebar() {
         )}
       </div>
 
+      {/* Mobile FAB — New Session button in thumb zone */}
+      <div className="md:hidden flex justify-end px-4 pb-2">
+        <button
+          onClick={handleNewSession}
+          title="New Session"
+          aria-label="New Session"
+          className="w-12 h-12 rounded-full bg-cc-primary hover:bg-cc-primary-hover text-white flex items-center justify-center shadow-lg transition-colors duration-150 cursor-pointer"
+        >
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2.5" className="w-5 h-5">
+            <path d="M8 3v10M3 8h10" />
+          </svg>
+        </button>
+      </div>
+
       {/* Footer */}
-      <div className="p-2 border-t border-cc-border bg-cc-sidebar-footer">
+      <div className="p-2 pb-safe bg-cc-sidebar-footer">
         <div className="grid grid-cols-3 gap-1">
           {NAV_ITEMS.map((item) => {
             const isActive = item.activePages
@@ -469,12 +623,13 @@ export function Sidebar() {
                     useStore.getState().closeTerminal();
                   }
                   window.location.hash = item.hash;
-                  if (item.id === "terminal" && window.innerWidth < 768) {
+                  // Close sidebar on mobile so the navigated page is visible
+                  if (window.innerWidth < 768) {
                     useStore.getState().setSidebarOpen(false);
                   }
                 }}
                 title={item.label}
-                className={`flex flex-col items-center justify-center gap-0.5 py-2 px-1 rounded-lg transition-colors cursor-pointer ${
+                className={`flex flex-col items-center justify-center gap-0.5 py-2.5 px-1.5 min-h-[44px] rounded-lg transition-colors cursor-pointer ${
                   isActive
                     ? "bg-cc-active text-cc-fg"
                     : "text-cc-muted hover:text-cc-fg hover:bg-cc-hover"
@@ -489,6 +644,68 @@ export function Sidebar() {
           })}
         </div>
       </div>
+
+      {/* Delete confirmation modal */}
+      {(confirmDeleteId || confirmDeleteAll) && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-[fadeIn_150ms_ease-out]"
+          onClick={confirmDeleteAll ? cancelDeleteAll : cancelDelete}
+        >
+          <div
+            className="mx-4 w-full max-w-[280px] bg-cc-card border border-cc-border rounded-xl shadow-2xl p-5 animate-[menu-appear_150ms_ease-out]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Icon */}
+            <div className="flex justify-center mb-3">
+              <div className="w-10 h-10 rounded-full bg-red-500/10 flex items-center justify-center">
+                <svg viewBox="0 0 16 16" fill="currentColor" className="w-5 h-5 text-red-400">
+                  <path d="M5.5 5.5A.5.5 0 016 6v6a.5.5 0 01-1 0V6a.5.5 0 01.5-.5zm2.5 0a.5.5 0 01.5.5v6a.5.5 0 01-1 0V6a.5.5 0 01.5-.5zm3 .5a.5.5 0 00-1 0v6a.5.5 0 001 0V6z" />
+                  <path fillRule="evenodd" d="M14.5 3a1 1 0 01-1 1H13v9a2 2 0 01-2 2H5a2 2 0 01-2-2V4h-.5a1 1 0 010-2H6a1 1 0 011-1h2a1 1 0 011 1h3.5a1 1 0 011 1zM4.118 4L4 4.059V13a1 1 0 001 1h6a1 1 0 001-1V4.059L11.882 4H4.118zM6 2h4v1H6V2z" clipRule="evenodd" />
+                </svg>
+              </div>
+            </div>
+
+            {/* Text */}
+            <h3 className="text-[13px] font-semibold text-cc-fg text-center">
+              {confirmDeleteAll ? "Delete all archived?" : "Delete session?"}
+            </h3>
+            <p className="text-[12px] text-cc-muted text-center mt-1.5 leading-relaxed">
+              {confirmDeleteAll
+                ? `This will permanently delete ${archivedSessions.length} archived session${archivedSessions.length === 1 ? "" : "s"}. This cannot be undone.`
+                : "This will permanently delete this session and its history. This cannot be undone."}
+            </p>
+
+            {/* Actions */}
+            <div className="flex gap-2.5 mt-4">
+              <button
+                onClick={confirmDeleteAll ? cancelDeleteAll : cancelDelete}
+                className="flex-1 px-3 py-2 text-[12px] font-medium rounded-lg bg-cc-hover text-cc-muted hover:text-cc-fg transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDeleteAll ? confirmDeleteAllArchived : confirmDelete}
+                className="flex-1 px-3 py-2 text-[12px] font-medium rounded-lg bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors cursor-pointer"
+              >
+                {confirmDeleteAll ? "Delete all" : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Archive Linear transition modal */}
+      {archiveModalSessionId && archiveModalInfo && (
+        <ArchiveLinearModal
+          issueIdentifier={archiveModalInfo.issue?.identifier || ""}
+          issueStateName={archiveModalInfo.issue?.stateName || ""}
+          isContainerized={archiveModalContainerized}
+          archiveTransitionConfigured={archiveModalInfo.archiveTransitionConfigured || false}
+          archiveTransitionStateName={archiveModalInfo.archiveTransitionStateName}
+          hasBacklogState={archiveModalInfo.hasBacklogState || false}
+          onConfirm={handleArchiveModalConfirm}
+          onCancel={handleArchiveModalCancel}
+        />
+      )}
     </aside>
   );
 }

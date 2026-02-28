@@ -1,6 +1,11 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { parseHash, sessionHash, navigateToSession, navigateHome } from "./routing.js";
+import {
+  parseHash,
+  sessionHash,
+  navigateToSession,
+  navigateHome,
+} from "./routing.js";
 
 describe("parseHash", () => {
   it("returns home for empty string", () => {
@@ -39,8 +44,8 @@ describe("parseHash", () => {
     expect(parseHash("#/environments")).toEqual({ page: "environments" });
   });
 
-  it("parses scheduled route", () => {
-    expect(parseHash("#/scheduled")).toEqual({ page: "scheduled" });
+  it("parses scheduled route (redirects to agents)", () => {
+    expect(parseHash("#/scheduled")).toEqual({ page: "agents" });
   });
 
   it("parses playground route", () => {

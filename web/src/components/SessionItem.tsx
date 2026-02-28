@@ -104,6 +104,9 @@ export function SessionItem({
 
   const derivedStatus = archived ? ("exited" as DerivedStatus) : deriveStatus(s);
 
+  // Show the full cwd path below the session name
+  const cwdTail = s.cwd || "";
+
   // Close menu on click outside or Escape
   useEffect(() => {
     if (!menuOpen) return;
@@ -134,14 +137,14 @@ export function SessionItem({
   }, []);
 
   return (
-    <div className={`relative group ${archived ? "opacity-50" : ""}`}>
+    <div className="relative group">
       <button
         onClick={() => onSelect(s.id)}
         onDoubleClick={(e) => {
           e.preventDefault();
           onStartRename(s.id, label);
         }}
-        className={`w-full flex items-center gap-2 py-2 pl-2.5 pr-12 min-h-[44px] rounded-lg transition-colors duration-100 cursor-pointer ${
+        className={`w-full flex items-center gap-1.5 py-2 pl-1 pr-12 min-h-[44px] rounded-lg transition-colors duration-100 cursor-pointer ${
           isActive
             ? "bg-cc-active"
             : "hover:bg-cc-hover"
@@ -174,14 +177,21 @@ export function SessionItem({
             className="text-[13px] font-medium flex-1 min-w-0 text-cc-fg bg-transparent border border-cc-border rounded px-1.5 py-0.5 outline-none focus:border-cc-primary/50 focus:ring-1 focus:ring-cc-primary/20"
           />
         ) : (
-          <span
-            className={`text-[13px] font-medium truncate text-cc-fg leading-snug flex-1 min-w-0 ${
-              isRecentlyRenamed ? "animate-name-appear" : ""
-            }`}
-            onAnimationEnd={() => onClearRecentlyRenamed(s.id)}
-          >
-            {label}
-          </span>
+          <div className="flex-1 min-w-0">
+            <span
+              className={`text-[13px] font-medium truncate text-cc-fg leading-snug block ${
+                isRecentlyRenamed ? "animate-name-appear" : ""
+              }`}
+              onAnimationEnd={() => onClearRecentlyRenamed(s.id)}
+            >
+              {label}
+            </span>
+            {cwdTail && (
+              <span className="text-[10px] text-cc-muted truncate block leading-tight">
+                {cwdTail}
+              </span>
+            )}
+          </div>
         )}
 
         {/* Badges: backend type + Docker + Cron */}
@@ -190,9 +200,7 @@ export function SessionItem({
             <BackendBadge type={s.backendType} />
             {s.isContainerized && (
               <span className="flex items-center px-1 py-0.5 rounded bg-blue-400/10" title="Docker">
-                <svg viewBox="0 0 16 16" fill="currentColor" className="w-2.5 h-2.5 text-blue-400">
-                  <path d="M8.5 1a.5.5 0 00-.5.5V3H6V1.5a.5.5 0 00-1 0V3H3.5a.5.5 0 000 1H5v2H3.5a.5.5 0 000 1H5v1.5a.5.5 0 001 0V7h2v1.5a.5.5 0 001 0V7h1.5a.5.5 0 000-1H9V4h1.5a.5.5 0 000-1H9V1.5a.5.5 0 00-.5-.5zM8 4v2H6V4h2z" />
-                </svg>
+                <img src="/logo-docker.svg" alt="Docker logo" className="w-3 h-3" />
               </span>
             )}
             {s.cronJobId && (

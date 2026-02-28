@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ComponentProps } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useStore } from "../store.js";
@@ -101,13 +101,30 @@ export function PermissionBanner({
               <ToolInputDisplay toolName={permission.tool_name} input={permission.input} description={permission.description} />
             )}
 
+            {/* AI validation recommendation (shown for "uncertain" verdicts that fall through to manual) */}
+            {permission.ai_validation && !isAskUser && (
+              <div className={`mt-2 flex items-center gap-1.5 text-[11px] px-2 py-1.5 rounded-md ${
+                permission.ai_validation.verdict === "safe"
+                  ? "bg-cc-success/10 text-cc-success"
+                  : permission.ai_validation.verdict === "dangerous"
+                    ? "bg-cc-error/10 text-cc-error"
+                    : "bg-cc-warning/10 text-cc-warning"
+              }`}>
+                <svg viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3 shrink-0">
+                  <path d="M8 1a2.5 2.5 0 00-2.5 2.5v.382a8 8 0 00-1.074.646l-.33-.191a2.5 2.5 0 00-3.415.912 2.5 2.5 0 00.916 3.42l.33.19A8 8 0 001.5 9.5v.382A8 8 0 002 10.5l-.33.19a2.5 2.5 0 00-.916 3.42 2.5 2.5 0 003.415.912l.33-.191a8 8 0 001.074.646V16A2.5 2.5 0 008 13.5 2.5 2.5 0 0010.5 16v-.713a8 8 0 001.074-.646l.33.191a2.5 2.5 0 003.415-.912 2.5 2.5 0 00-.916-3.42L14 10.5V9.5l.33-.19a2.5 2.5 0 00.916-3.42 2.5 2.5 0 00-3.415-.912l-.33.191A8 8 0 0010.5 4.882V4.5A2.5 2.5 0 008 2V1z"/>
+                </svg>
+                <span className="font-medium">AI analysis:</span>
+                <span>{permission.ai_validation.reason}</span>
+              </div>
+            )}
+
             {/* Actions - only for non-AskUserQuestion tools */}
             {!isAskUser && (
               <div className="flex items-center gap-2 mt-3 flex-wrap">
                 <button
                   onClick={() => handleAllow()}
                   disabled={loading}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-cc-success/90 hover:bg-cc-success text-white disabled:opacity-50 transition-colors cursor-pointer"
+                  className="inline-flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium rounded-lg bg-cc-success/90 hover:bg-cc-success text-white disabled:opacity-50 transition-colors cursor-pointer"
                 >
                   <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2.5" className="w-3 h-3">
                     <path d="M3 8.5l3.5 3.5 6.5-7" />
@@ -122,7 +139,7 @@ export function PermissionBanner({
                     onClick={() => handleAllow(undefined, [suggestion])}
                     disabled={loading}
                     title={`${suggestion.type}: ${JSON.stringify(suggestion)}`}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-cc-primary/10 hover:bg-cc-primary/20 text-cc-primary border border-cc-primary/20 disabled:opacity-50 transition-colors cursor-pointer"
+                    className="inline-flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium rounded-lg bg-cc-primary/10 hover:bg-cc-primary/20 text-cc-primary border border-cc-primary/20 disabled:opacity-50 transition-colors cursor-pointer"
                   >
                     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" className="w-3 h-3">
                       <path d="M3 8.5l3.5 3.5 6.5-7" />
@@ -134,7 +151,7 @@ export function PermissionBanner({
                 <button
                   onClick={handleDeny}
                   disabled={loading}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-cc-hover hover:bg-cc-active text-cc-fg border border-cc-border disabled:opacity-50 transition-colors cursor-pointer"
+                  className="inline-flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium rounded-lg bg-cc-hover hover:bg-cc-active text-cc-fg border border-cc-border disabled:opacity-50 transition-colors cursor-pointer"
                 >
                   <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2.5" className="w-3 h-3">
                     <path d="M4 4l8 8M12 4l-8 8" />
@@ -464,8 +481,8 @@ function ExitPlanModeDisplay({ input }: { input: Record<string, unknown> }) {
   return (
     <div className="space-y-2">
       {plan && (
-        <div className="rounded-xl border border-cc-primary/25 overflow-hidden bg-gradient-to-b from-cc-primary/6 to-cc-card">
-          <div className="px-3 py-2 border-b border-cc-primary/20 flex items-center gap-2">
+        <div className="rounded-xl border border-cc-border overflow-hidden bg-cc-card">
+          <div className="px-3 py-2 border-b border-cc-border bg-cc-primary/[0.04] flex items-center gap-2">
             <span className="inline-flex items-center justify-center w-5 h-5 rounded bg-cc-primary/15 text-cc-primary shrink-0">
               <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-3 h-3">
                 <path d="M3 3.5h10M3 8h10M3 12.5h6" strokeLinecap="round" />
@@ -484,11 +501,30 @@ function ExitPlanModeDisplay({ input }: { input: Record<string, unknown> }) {
                 ul: ({ children }) => <ul className="list-disc pl-4 mb-2 space-y-0.5">{children}</ul>,
                 ol: ({ children }) => <ol className="list-decimal pl-4 mb-2 space-y-0.5">{children}</ol>,
                 li: ({ children }) => <li>{children}</li>,
-                code: ({ children }) => (
-                  <code className="px-1 py-0.5 rounded bg-cc-code-bg/50 text-cc-primary font-mono-code text-[12px]">
-                    {children}
-                  </code>
+                strong: ({ children }) => <strong className="font-semibold text-cc-fg">{children}</strong>,
+                a: ({ href, children }) => (
+                  <a href={href} target="_blank" rel="noopener noreferrer" className="text-cc-primary hover:underline">{children}</a>
                 ),
+                code: (props: ComponentProps<"code">) => {
+                  const { children, className } = props;
+                  const match = /language-(\w+)/.exec(className || "");
+                  const isBlock = match || (typeof children === "string" && children.includes("\n"));
+
+                  if (isBlock) {
+                    return (
+                      <pre className="my-2 px-2.5 py-2 rounded-lg bg-cc-code-bg text-cc-code-fg text-[12px] font-mono-code leading-relaxed overflow-x-auto border border-cc-border">
+                        <code>{children}</code>
+                      </pre>
+                    );
+                  }
+
+                  return (
+                    <code className="px-1.5 py-0.5 rounded-md bg-cc-fg/[0.06] text-cc-code-fg font-mono-code text-[12px]">
+                      {children}
+                    </code>
+                  );
+                },
+                pre: ({ children }) => <>{children}</>,
                 blockquote: ({ children }) => (
                   <blockquote className="border-l-2 border-cc-primary/40 pl-2 text-cc-muted italic my-2">{children}</blockquote>
                 ),

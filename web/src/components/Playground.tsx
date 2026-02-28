@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { PermissionBanner } from "./PermissionBanner.js";
 import { MessageBubble } from "./MessageBubble.js";
 import { ToolBlock, getToolIcon, getToolLabel, getPreview, ToolIcon } from "./ToolBlock.js";
@@ -10,6 +10,8 @@ import { ClaudeMdEditor } from "./ClaudeMdEditor.js";
 import { ChatView } from "./ChatView.js";
 import { api } from "../api.js";
 import type { PermissionRequest, ChatMessage, ContentBlock, SessionState, McpServerDetail } from "../types.js";
+import { AiValidationBadge } from "./AiValidationBadge.js";
+import { AiValidationToggle } from "./AiValidationToggle.js";
 import type { TaskItem } from "../types.js";
 import type { UpdateInfo, GitHubPRInfo, LinearIssue, LinearComment } from "../api.js";
 import { GitHubPRDisplay, CodexRateLimitsSection, CodexTokenDetailsSection } from "./TaskPanel.js";
@@ -131,6 +133,27 @@ const PERM_DYNAMIC = mockPermission({
   tool_name: "dynamic:code_interpreter",
   input: { code: "print('hello from dynamic tool')" },
   description: "Custom tool call: code_interpreter",
+});
+
+// AI Validation mock: uncertain verdict (shown to user with recommendation)
+const PERM_AI_UNCERTAIN = mockPermission({
+  tool_name: "Bash",
+  input: { command: "npm install --save-dev @types/react" },
+  ai_validation: { verdict: "uncertain", reason: "Package installation modifies node_modules", ruleBasedOnly: false },
+});
+
+// AI Validation mock: safe recommendation (shown when auto-approve is off)
+const PERM_AI_SAFE = mockPermission({
+  tool_name: "Bash",
+  input: { command: "git status" },
+  ai_validation: { verdict: "safe", reason: "Read-only git command", ruleBasedOnly: false },
+});
+
+// AI Validation mock: dangerous recommendation (shown when auto-deny is off)
+const PERM_AI_DANGEROUS = mockPermission({
+  tool_name: "Bash",
+  input: { command: "rm -rf node_modules && rm -rf .git" },
+  ai_validation: { verdict: "dangerous", reason: "Recursive delete of project files", ruleBasedOnly: false },
 });
 
 const PERM_ASK_SINGLE = mockPermission({
@@ -536,13 +559,15 @@ export function Playground() {
     store.setConnectionStatus(sessionId, "connected");
     store.setCliConnected(sessionId, true);
     store.setSessionStatus(sessionId, "running");
+    const streamingText = "I'm updating tests and then I'll run the full suite.";
     store.setMessages(sessionId, [
       MSG_USER,
       MSG_ASSISTANT,
       MSG_ASSISTANT_TOOLS,
       MSG_TOOL_ERROR,
+      { id: "stream-draft", role: "assistant", content: streamingText, timestamp: Date.now(), isStreaming: true },
     ]);
-    store.setStreaming(sessionId, "I'm updating tests and then I'll run the full suite.");
+    store.setStreaming(sessionId, streamingText);
     store.setStreamingStats(sessionId, { startedAt: Date.now() - 12000, outputTokens: 1200 });
     store.addPermission(sessionId, PERM_BASH);
     store.addPermission(sessionId, PERM_DYNAMIC);
@@ -654,6 +679,49 @@ export function Playground() {
             </Card>
             <Card label="Multi-question">
               <PermissionBanner permission={PERM_ASK_MULTI} sessionId={MOCK_SESSION_ID} />
+            </Card>
+          </div>
+        </Section>
+
+        {/* ─── AI Validation ──────────────────────────────── */}
+        <Section title="AI Validation" description="AI-powered permission validation badges and recommendations">
+          <div className="space-y-4">
+            <Card label="Permission with AI recommendation (uncertain)">
+              <PermissionBanner permission={PERM_AI_UNCERTAIN} sessionId={MOCK_SESSION_ID} />
+            </Card>
+            <Card label="Permission with AI recommendation (safe)">
+              <PermissionBanner permission={PERM_AI_SAFE} sessionId={MOCK_SESSION_ID} />
+            </Card>
+            <Card label="Permission with AI recommendation (dangerous)">
+              <PermissionBanner permission={PERM_AI_DANGEROUS} sessionId={MOCK_SESSION_ID} />
+            </Card>
+            <Card label="Per-session toggle (disabled)">
+              <PlaygroundAiValidationToggle enabled={false} />
+            </Card>
+            <Card label="Per-session toggle (enabled)">
+              <PlaygroundAiValidationToggle enabled={true} />
+            </Card>
+            <Card label="Auto-resolved badges">
+              <div className="border border-cc-border rounded-xl overflow-hidden bg-cc-card divide-y divide-cc-border">
+                <AiValidationBadge entry={{
+                  request: mockPermission({ tool_name: "Read", input: { file_path: "/src/index.ts" } }),
+                  behavior: "allow",
+                  reason: "Read is a read-only tool",
+                  timestamp: Date.now(),
+                }} />
+                <AiValidationBadge entry={{
+                  request: mockPermission({ tool_name: "Bash", input: { command: "rm -rf /" } }),
+                  behavior: "deny",
+                  reason: "Recursive delete of root directory",
+                  timestamp: Date.now(),
+                }} />
+                <AiValidationBadge entry={{
+                  request: mockPermission({ tool_name: "Grep", input: { pattern: "TODO", path: "/src" } }),
+                  behavior: "allow",
+                  reason: "Grep is a read-only tool",
+                  timestamp: Date.now(),
+                }} />
+              </div>
             </Card>
           </div>
         </Section>
@@ -1036,6 +1104,7 @@ export function Playground() {
                   isServiceMode: true,
                   updateInProgress: false,
                   lastChecked: Date.now(),
+                  channel: "stable",
                 }}
               />
             </Card>
@@ -1048,6 +1117,7 @@ export function Playground() {
                   isServiceMode: false,
                   updateInProgress: false,
                   lastChecked: Date.now(),
+                  channel: "stable",
                 }}
               />
             </Card>
@@ -1060,6 +1130,20 @@ export function Playground() {
                   isServiceMode: true,
                   updateInProgress: true,
                   lastChecked: Date.now(),
+                  channel: "stable",
+                }}
+              />
+            </Card>
+            <Card label="Prerelease channel update">
+              <PlaygroundUpdateBanner
+                updateInfo={{
+                  currentVersion: "0.22.1",
+                  latestVersion: "0.23.0-preview.20260228120000.abc1234",
+                  updateAvailable: true,
+                  isServiceMode: true,
+                  updateInProgress: false,
+                  lastChecked: Date.now(),
+                  channel: "prerelease",
                 }}
               />
             </Card>
@@ -1300,6 +1384,10 @@ export function Playground() {
               <PlaygroundSubagentGroup
                 description="Search codebase for auth patterns"
                 agentType="Explore"
+                status="completed"
+                senderThreadId="thr_main"
+                receiverThreadIds={["thr_sub_1", "thr_sub_2"]}
+                receiverCount={2}
                 items={MOCK_SUBAGENT_TOOL_ITEMS}
               />
             </Card>
@@ -1856,8 +1944,37 @@ function PlaygroundToolGroup({ toolName, items }: { toolName: string; items: Too
 
 // ─── Inline Subagent Group (mirrors MessageFeed's SubagentContainer) ────────
 
-function PlaygroundSubagentGroup({ description, agentType, items }: { description: string; agentType: string; items: ToolItem[] }) {
+function PlaygroundSubagentGroup({
+  description,
+  agentType,
+  backend = "codex",
+  status,
+  senderThreadId,
+  receiverThreadIds = [],
+  receiverCount,
+  items,
+}: {
+  description: string;
+  agentType: string;
+  backend?: "claude" | "codex";
+  status?: string;
+  senderThreadId?: string;
+  receiverThreadIds?: string[];
+  receiverCount?: number;
+  items: ToolItem[];
+}) {
   const [open, setOpen] = useState(true);
+  const normalizedStatus = useMemo(() => {
+    if (!status) return null;
+    const raw = status.trim().toLowerCase();
+    if (!raw) return null;
+    if (raw === "completed") return { label: "completed", className: "text-green-600 bg-green-500/15", summary: "completed" };
+    if (raw === "failed" || raw === "error" || raw === "errored") return { label: "failed", className: "text-cc-error bg-cc-error/10", summary: "failed" };
+    if (raw === "pending" || raw === "pendinginit" || raw === "pending_init") return { label: "pending", className: "text-amber-700 bg-amber-500/15", summary: "pending" };
+    if (raw === "running" || raw === "inprogress" || raw === "in_progress" || raw === "started") return { label: "running", className: "text-blue-600 bg-blue-500/15", summary: "running" };
+    return { label: status, className: "text-amber-700 bg-amber-500/15", summary: "running" };
+  }, [status]);
+  const statusSummaryCount = receiverCount !== undefined ? receiverCount : items.length;
 
   return (
     <div className="ml-9 border-l-2 border-cc-primary/20 pl-4">
@@ -1878,12 +1995,58 @@ function PlaygroundSubagentGroup({ description, agentType, items }: { descriptio
             {agentType}
           </span>
         )}
+        <span className="text-[10px] text-cc-muted bg-cc-hover rounded-full px-1.5 py-0.5 shrink-0">
+          {backend === "codex" ? "Codex" : "Claude"}
+        </span>
+        {normalizedStatus && (
+          <span className={`text-[10px] rounded-full px-1.5 py-0.5 shrink-0 ${normalizedStatus.className}`}>
+            {normalizedStatus.label}
+          </span>
+        )}
+        {receiverCount !== undefined && (
+          <span className="text-[10px] text-cc-muted bg-cc-hover rounded-full px-1.5 py-0.5 shrink-0">
+            {receiverCount} agent{receiverCount === 1 ? "" : "s"}
+          </span>
+        )}
         <span className="text-[10px] text-cc-muted bg-cc-hover rounded-full px-1.5 py-0.5 tabular-nums shrink-0 ml-auto">
           {items.length}
         </span>
       </button>
       {open && (
         <div className="space-y-3 pb-2">
+          {(normalizedStatus || senderThreadId || receiverThreadIds.length > 0) && (
+            <div className="rounded-lg border border-cc-border bg-cc-card px-2.5 py-2 space-y-1.5">
+              <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+                {normalizedStatus && (
+                  <span className={`rounded-full px-1.5 py-0.5 ${normalizedStatus.className}`}>
+                    {statusSummaryCount} {normalizedStatus.summary}
+                  </span>
+                )}
+                {senderThreadId && (
+                  <span className="rounded-full px-1.5 py-0.5 text-cc-muted bg-cc-hover font-mono-code">
+                    sender: {senderThreadId}
+                  </span>
+                )}
+                {receiverThreadIds.length > 0 && (
+                  <span className="rounded-full px-1.5 py-0.5 text-cc-muted bg-cc-hover">
+                    receivers: {receiverThreadIds.length}
+                  </span>
+                )}
+              </div>
+              {receiverThreadIds.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {receiverThreadIds.map((threadId) => (
+                    <span
+                      key={threadId}
+                      className="text-[10px] rounded-full px-1.5 py-0.5 text-cc-muted bg-cc-hover font-mono-code"
+                    >
+                      {threadId}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           <PlaygroundToolGroup toolName={items[0]?.name || "Grep"} items={items} />
         </div>
       )}
@@ -2121,6 +2284,64 @@ function TaskRow({ task }: { task: TaskItem }) {
           <span>blocked by {task.blockedBy.map((b) => `#${b}`).join(", ")}</span>
         </p>
       )}
+    </div>
+  );
+}
+
+// ─── Inline AiValidationToggle playground wrapper ───────────────────────────
+
+const PLAYGROUND_AI_VALIDATION_SESSION = "ai-validation-playground";
+
+function PlaygroundAiValidationToggle({ enabled }: { enabled: boolean }) {
+  useEffect(() => {
+    const store = useStore.getState();
+    const prev = store.sessions.get(PLAYGROUND_AI_VALIDATION_SESSION);
+    store.updateSession(PLAYGROUND_AI_VALIDATION_SESSION, {
+      session_id: PLAYGROUND_AI_VALIDATION_SESSION,
+      model: "claude-sonnet-4-20250514",
+      cwd: "/workspace",
+      tools: [],
+      permissionMode: "default",
+      claude_code_version: "1.0.0",
+      mcp_servers: [],
+      agents: [],
+      slash_commands: [],
+      skills: [],
+      total_cost_usd: 0,
+      num_turns: 0,
+      context_used_percent: 0,
+      is_compacting: false,
+      git_branch: "main",
+      is_worktree: false,
+      is_containerized: false,
+      repo_root: "/workspace",
+      git_ahead: 0,
+      git_behind: 0,
+      total_lines_added: 0,
+      total_lines_removed: 0,
+      aiValidationEnabled: enabled,
+      aiValidationAutoApprove: true,
+      aiValidationAutoDeny: true,
+      ...prev,
+    });
+    return () => {
+      if (prev) {
+        useStore.getState().updateSession(PLAYGROUND_AI_VALIDATION_SESSION, prev);
+      }
+    };
+  }, [enabled]);
+
+  // Force the enabled state each render to match the prop
+  useEffect(() => {
+    useStore.getState().setSessionAiValidation(PLAYGROUND_AI_VALIDATION_SESSION, {
+      aiValidationEnabled: enabled,
+    });
+  }, [enabled]);
+
+  return (
+    <div className="flex items-center gap-2 p-2">
+      <AiValidationToggle sessionId={PLAYGROUND_AI_VALIDATION_SESSION} />
+      <span className="text-xs text-cc-muted">Click to toggle</span>
     </div>
   );
 }

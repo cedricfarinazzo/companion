@@ -171,7 +171,7 @@ describe("CopilotAdapter", () => {
     const initMsgs = messages.filter((m) => m.type === "session_init");
     expect(initMsgs.length).toBe(1);
 
-    const init = initMsgs[0] as { session: Record<string, unknown> };
+    const init = initMsgs[0] as unknown as { session: Record<string, unknown> };
     expect(init.session.backend_type).toBe("copilot");
     expect(init.session.model).toBe("gpt-4o");
     expect(init.session.cwd).toBe("/home/user/project");

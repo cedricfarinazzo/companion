@@ -22,6 +22,10 @@ cd web && bun run typecheck
 # Production build + serve
 cd web && bun run build && bun run start
 
+# Auth token management
+cd web && bun run generate-token          # show current token
+cd web && bun run generate-token --force  # regenerate a new token
+
 # Landing page (thecompanion.sh) — idempotent: starts if down, no-op if up
 # IMPORTANT: Always use this script to run the landing page. Never cd into landing/ and run bun/vite manually.
 ./scripts/landing-start.sh          # start
@@ -103,7 +107,7 @@ The server automatically records **all raw protocol messages** (both Claude Code
 - **Format**: JSONL — one JSON object per line. First line is a header with session metadata, subsequent lines are raw message entries.
 - **File naming**: `{sessionId}_{backendType}_{ISO-timestamp}_{randomSuffix}.jsonl`
 - **Disable**: set `COMPANION_RECORD=0` or `COMPANION_RECORD=false`
-- **Rotation**: automatic cleanup when total lines exceed 100k (configurable via `COMPANION_RECORDINGS_MAX_LINES`)
+- **Rotation**: automatic cleanup when total lines exceed 1M (configurable via `COMPANION_RECORDINGS_MAX_LINES`)
 
 Each entry captures:
 ```json

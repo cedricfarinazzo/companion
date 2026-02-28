@@ -14,6 +14,12 @@ const mockCreatePrompt = vi.fn();
 // Build a controllable mock store state
 let mockStoreState: Record<string, unknown> = {};
 
+const mockReadFileAsBase64 = vi.fn();
+
+vi.mock("../utils/image.js", () => ({
+  readFileAsBase64: (...args: unknown[]) => mockReadFileAsBase64(...args),
+}));
+
 vi.mock("../ws.js", () => ({
   sendToSession: (...args: unknown[]) => mockSendToSession(...args),
 }));
@@ -99,9 +105,12 @@ function setupMockStore(overrides: {
     cliConnected: cliConnectedMap,
     sessionStatus: sessionStatusMap,
     previousPermissionMode: previousPermissionModeMap,
+    sdkSessions: [{ sessionId: "s1", model: "claude-sonnet-4-6", backendType: "claude", cwd: "/test" }],
+    sessionNames: new Map<string, string>(),
     appendMessage: mockAppendMessage,
     updateSession: mockUpdateSession,
     setPreviousPermissionMode: mockSetPreviousPermissionMode,
+    setSdkSessions: vi.fn(),
   };
 }
 
@@ -127,7 +136,7 @@ describe("Composer basic rendering", () => {
     const textarea = container.querySelector("textarea");
     expect(textarea).toBeTruthy();
     // Send button (the round one with the arrow SVG) - identified by title
-    const sendBtn = screen.getByTitle("Send message");
+    const sendBtn = screen.getAllByTitle("Send message")[0];
     expect(sendBtn).toBeTruthy();
   });
 });
@@ -137,14 +146,14 @@ describe("Composer basic rendering", () => {
 describe("Composer send button state", () => {
   it("send button is disabled when text is empty", () => {
     render(<Composer sessionId="s1" />);
-    const sendBtn = screen.getByTitle("Send message");
+    const sendBtn = screen.getAllByTitle("Send message")[0];
     expect(sendBtn.hasAttribute("disabled")).toBe(true);
   });
 
   it("send button is disabled when CLI is not connected", () => {
     setupMockStore({ isConnected: false });
     render(<Composer sessionId="s1" />);
-    const sendBtn = screen.getByTitle("Send message");
+    const sendBtn = screen.getAllByTitle("Send message")[0];
     expect(sendBtn.hasAttribute("disabled")).toBe(true);
   });
 
@@ -154,7 +163,7 @@ describe("Composer send button state", () => {
 
     fireEvent.change(textarea, { target: { value: "Hello world" } });
 
-    const sendBtn = screen.getByTitle("Send message");
+    const sendBtn = screen.getAllByTitle("Send message")[0];
     expect(sendBtn.hasAttribute("disabled")).toBe(false);
   });
 });
@@ -191,7 +200,7 @@ describe("Composer sending messages", () => {
     const textarea = container.querySelector("textarea")!;
 
     fireEvent.change(textarea, { target: { value: "click send" } });
-    fireEvent.click(screen.getByTitle("Send message"));
+    fireEvent.click(screen.getAllByTitle("Send message")[0]);
 
     expect(mockSendToSession).toHaveBeenCalledWith("s1", expect.objectContaining({
       type: "user_message",
@@ -234,17 +243,17 @@ describe("Composer interrupt button", () => {
     setupMockStore({ sessionStatus: "running" });
     render(<Composer sessionId="s1" />);
 
-    const stopBtn = screen.getByTitle("Stop generation");
+    const stopBtn = screen.getAllByTitle("Stop generation")[0];
     expect(stopBtn).toBeTruthy();
-    // Send button should not be present
-    expect(screen.queryByTitle("Send message")).toBeNull();
+    // Send button should not be present (both mobile and desktop show stop)
+    expect(screen.queryAllByTitle("Send message")).toHaveLength(0);
   });
 
   it("interrupt button sends interrupt message", () => {
     setupMockStore({ sessionStatus: "running" });
     render(<Composer sessionId="s1" />);
 
-    fireEvent.click(screen.getByTitle("Stop generation"));
+    fireEvent.click(screen.getAllByTitle("Stop generation")[0]);
 
     expect(mockSendToSession).toHaveBeenCalledWith("s1", { type: "interrupt" });
   });
@@ -253,8 +262,8 @@ describe("Composer interrupt button", () => {
     setupMockStore({ sessionStatus: "idle" });
     render(<Composer sessionId="s1" />);
 
-    expect(screen.getByTitle("Send message")).toBeTruthy();
-    expect(screen.queryByTitle("Stop generation")).toBeNull();
+    expect(screen.getAllByTitle("Send message")[0]).toBeTruthy();
+    expect(screen.queryAllByTitle("Stop generation")).toHaveLength(0);
   });
 });
 
@@ -528,18 +537,20 @@ describe("Composer layout", () => {
 
   it("send button has consistent dimensions", () => {
     // Verifies the send button has explicit sizing classes for consistent layout.
+    // Both mobile (w-10 h-10) and desktop (w-9 h-9) send buttons exist in JSDOM.
     render(<Composer sessionId="s1" />);
-    const sendBtn = screen.getByTitle("Send message");
-    expect(sendBtn.className).toContain("w-9");
-    expect(sendBtn.className).toContain("h-9");
+    const sendBtns = screen.getAllByTitle("Send message");
+    expect(sendBtns.length).toBeGreaterThanOrEqual(1);
+    // At least one button should have explicit width/height classes
+    const hasSize = sendBtns.some((btn) => btn.className.includes("w-"));
+    expect(hasSize).toBe(true);
   });
 
-  it("textarea uses min-w-0 to prevent flex overflow", () => {
-    // Verifies the textarea container uses min-w-0 to prevent content from
-    // overflowing its flex parent.
+  it("textarea is full-width within its container", () => {
+    // Verifies the textarea stretches to fill the input area.
     const { container } = render(<Composer sessionId="s1" />);
     const textarea = container.querySelector("textarea")!;
-    expect(textarea.className).toContain("min-w-0");
+    expect(textarea.className).toContain("w-full");
   });
 });
 
@@ -560,11 +571,246 @@ describe("Composer save prompt", () => {
     expect(await screen.findByText("Could not save prompt right now")).toBeTruthy();
   });
 
+  it("renders scope buttons in save prompt modal", async () => {
+    // Validates the Global / This project scope selector is visible in the save prompt modal.
+    const { container } = render(<Composer sessionId="s1" />);
+    const textarea = container.querySelector("textarea")!;
+    fireEvent.change(textarea, { target: { value: "Some text" } });
+    fireEvent.click(screen.getAllByTitle("Save as prompt")[0]);
+
+    expect(screen.getByText("Global")).toBeTruthy();
+    expect(screen.getByText("This project")).toBeTruthy();
+  });
+
+  it("saves project-scoped prompt with session cwd", async () => {
+    // Validates that selecting "This project" sends projectPaths with the session cwd.
+    mockCreatePrompt.mockResolvedValue({ id: "p1", name: "test", content: "body", scope: "project", projectPaths: ["/test"] });
+    const { container } = render(<Composer sessionId="s1" />);
+    const textarea = container.querySelector("textarea")!;
+    fireEvent.change(textarea, { target: { value: "Prompt body" } });
+    fireEvent.click(screen.getAllByTitle("Save as prompt")[0]);
+    fireEvent.change(screen.getByPlaceholderText("Prompt title"), { target: { value: "My Prompt" } });
+
+    // Switch to project scope
+    fireEvent.click(screen.getByText("This project"));
+    fireEvent.click(screen.getByText("Save"));
+
+    await waitFor(() => {
+      expect(mockCreatePrompt).toHaveBeenCalledWith({
+        name: "My Prompt",
+        content: "Prompt body",
+        scope: "project",
+        projectPaths: ["/test"],
+      });
+    });
+  });
+
+  it("shows error when saving project-scoped prompt without cwd", async () => {
+    // Validates that an informative error is shown when cwd is not available.
+    setupMockStore({ isConnected: true, session: { cwd: "" } });
+    const { container } = render(<Composer sessionId="s1" />);
+    const textarea = container.querySelector("textarea")!;
+    fireEvent.change(textarea, { target: { value: "Prompt body" } });
+    fireEvent.click(screen.getAllByTitle("Save as prompt")[0]);
+    fireEvent.change(screen.getByPlaceholderText("Prompt title"), { target: { value: "My Prompt" } });
+
+    fireEvent.click(screen.getByText("This project"));
+    fireEvent.click(screen.getByText("Save"));
+
+    expect(await screen.findByText("No project folder available for this session")).toBeTruthy();
+    expect(mockCreatePrompt).not.toHaveBeenCalled();
+  });
+
+  it("shows cwd path when project scope selected", () => {
+    // Validates the cwd is displayed below the scope selector in project mode.
+    const { container } = render(<Composer sessionId="s1" />);
+    const textarea = container.querySelector("textarea")!;
+    fireEvent.change(textarea, { target: { value: "Prompt body" } });
+    fireEvent.click(screen.getAllByTitle("Save as prompt")[0]);
+    fireEvent.click(screen.getByText("This project"));
+
+    expect(screen.getByText("/test")).toBeTruthy();
+  });
+
+  it("cancel button closes save prompt modal and resets scope", () => {
+    // Validates the cancel button resets state.
+    const { container } = render(<Composer sessionId="s1" />);
+    const textarea = container.querySelector("textarea")!;
+    fireEvent.change(textarea, { target: { value: "Prompt body" } });
+    fireEvent.click(screen.getAllByTitle("Save as prompt")[0]);
+    fireEvent.click(screen.getByText("This project"));
+    fireEvent.click(screen.getByText("Cancel"));
+
+    // Modal should be closed
+    expect(screen.queryByText("Save prompt")).toBeFalsy();
+  });
+
+  it("clears error when typing in prompt title", () => {
+    // Validates that typing in the title input clears a previous error.
+    setupMockStore({ isConnected: true, session: { cwd: "" } });
+    const { container } = render(<Composer sessionId="s1" />);
+    const textarea = container.querySelector("textarea")!;
+    fireEvent.change(textarea, { target: { value: "body" } });
+    fireEvent.click(screen.getAllByTitle("Save as prompt")[0]);
+    fireEvent.change(screen.getByPlaceholderText("Prompt title"), { target: { value: "title" } });
+    fireEvent.click(screen.getByText("This project"));
+    fireEvent.click(screen.getByText("Save"));
+
+    // Error should appear
+    expect(screen.getByText("No project folder available for this session")).toBeTruthy();
+
+    // Typing should clear the error
+    fireEvent.change(screen.getByPlaceholderText("Prompt title"), { target: { value: "title2" } });
+    expect(screen.queryByText("No project folder available for this session")).toBeFalsy();
+  });
+
+  it("can toggle scope back to global after selecting project", () => {
+    // Validates clicking Global button after selecting "This project" resets scope.
+    const { container } = render(<Composer sessionId="s1" />);
+    const textarea = container.querySelector("textarea")!;
+    fireEvent.change(textarea, { target: { value: "body" } });
+    fireEvent.click(screen.getAllByTitle("Save as prompt")[0]);
+
+    // Select project, then switch back to global
+    fireEvent.click(screen.getByText("This project"));
+    expect(screen.getByText("/test")).toBeTruthy();
+    fireEvent.click(screen.getByText("Global"));
+
+    // cwd should no longer be shown
+    expect(screen.queryByText("/test")).toBeFalsy();
+  });
+
   it("passes axe accessibility checks", async () => {
     const { axe } = await import("vitest-axe");
     setupMockStore({ isConnected: true });
     const { container } = render(<Composer sessionId="s1" />);
     const results = await axe(container);
     expect(results).toHaveNoViolations();
+  });
+});
+
+// ─── Toolbar interactions ────────────────────────────────────────────────────
+
+describe("Composer toolbar interactions", () => {
+  it("mobile upload image button triggers file input", () => {
+    // Validates the mobile upload image button opens the file picker via hidden input.
+    const { container } = render(<Composer sessionId="s1" />);
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+    const clickSpy = vi.spyOn(fileInput, "click");
+    // There are two upload image buttons (mobile + desktop); click the one titled "Upload image" (mobile)
+    const uploadBtn = screen.getByTitle("Upload image");
+    fireEvent.click(uploadBtn);
+    expect(clickSpy).toHaveBeenCalled();
+  });
+
+  it("desktop attach image button triggers file input", () => {
+    // Validates the desktop attach image button opens the file picker via hidden input.
+    const { container } = render(<Composer sessionId="s1" />);
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+    const clickSpy = vi.spyOn(fileInput, "click");
+    const attachBtn = screen.getByTitle("Attach image");
+    fireEvent.click(attachBtn);
+    expect(clickSpy).toHaveBeenCalled();
+  });
+
+  it("desktop save prompt button opens save modal with default name", () => {
+    // Validates clicking the desktop bookmark icon opens save modal and pre-fills name.
+    const { container } = render(<Composer sessionId="s1" />);
+    const textarea = container.querySelector("textarea")!;
+    fireEvent.change(textarea, { target: { value: "My prompt text" } });
+
+    // The second "Save as prompt" button is the desktop one
+    const saveButtons = screen.getAllByTitle("Save as prompt");
+    fireEvent.click(saveButtons[saveButtons.length - 1]);
+
+    expect(screen.getByText("Save prompt")).toBeTruthy();
+    const titleInput = screen.getByPlaceholderText("Prompt title") as HTMLInputElement;
+    expect(titleInput.value).toBe("My prompt text");
+  });
+
+  it("mode toggle button triggers plan mode on desktop", () => {
+    // Validates clicking the mode toggle button on desktop activates plan mode.
+    render(<Composer sessionId="s1" />);
+    // Mode toggle buttons have title "Toggle mode (Shift+Tab)"
+    const modeButtons = screen.getAllByTitle("Toggle mode (Shift+Tab)");
+    // Click a mode button to enter plan mode
+    fireEvent.click(modeButtons[0]);
+    expect(mockSendToSession).toHaveBeenCalledWith("s1", { type: "set_permission_mode", mode: "plan" });
+  });
+
+  it("mode toggle restores previous mode when already in plan mode", () => {
+    // Validates toggling off plan mode restores the previous permission mode.
+    setupMockStore({ session: { permissionMode: "plan" } });
+    render(<Composer sessionId="s1" />);
+    const modeButtons = screen.getAllByTitle("Toggle mode (Shift+Tab)");
+    fireEvent.click(modeButtons[0]);
+    expect(mockSendToSession).toHaveBeenCalledWith("s1", { type: "set_permission_mode", mode: "acceptEdits" });
+  });
+
+  it("mobile send button dispatches message when text is entered", () => {
+    // Validates the mobile send button (w-10 h-10) can send messages.
+    const { container } = render(<Composer sessionId="s1" />);
+    const textarea = container.querySelector("textarea")!;
+    fireEvent.change(textarea, { target: { value: "Mobile message" } });
+
+    // There are two send buttons; both should work. Click the first one (mobile).
+    const sendBtns = screen.getAllByTitle("Send message");
+    fireEvent.click(sendBtns[0]);
+    expect(mockSendToSession).toHaveBeenCalledWith("s1", expect.objectContaining({
+      type: "user_message",
+      content: "Mobile message",
+    }));
+  });
+
+  it("clicking a slash command item selects it", () => {
+    // Validates clicking a command in the slash menu fills the textarea.
+    setupMockStore({ session: { slash_commands: ["help", "clear"], skills: [] } });
+    const { container } = render(<Composer sessionId="s1" />);
+    const textarea = container.querySelector("textarea")!;
+
+    fireEvent.change(textarea, { target: { value: "/" } });
+    // Click the "/clear" button in the menu
+    const clearBtn = screen.getByText("/clear").closest("button")!;
+    fireEvent.click(clearBtn);
+    expect((textarea as HTMLTextAreaElement).value).toContain("/clear");
+  });
+
+  it("slash menu closes when text no longer starts with /", () => {
+    // Validates the slash menu auto-closes when text changes away from slash prefix.
+    setupMockStore({ session: { slash_commands: ["help"], skills: [] } });
+    const { container } = render(<Composer sessionId="s1" />);
+    const textarea = container.querySelector("textarea")!;
+
+    fireEvent.change(textarea, { target: { value: "/" } });
+    expect(screen.getByText("/help")).toBeTruthy();
+
+    // Change to non-slash text — menu should close
+    fireEvent.change(textarea, { target: { value: "hello" } });
+    expect(screen.queryByText("/help")).toBeFalsy();
+  });
+});
+
+// ─── Image attachment ────────────────────────────────────────────────────────
+
+describe("Composer image attachment", () => {
+  it("file input adds image thumbnails and remove button works", async () => {
+    // Validates the file select handler processes images and renders thumbnails.
+    mockReadFileAsBase64.mockResolvedValue({ base64: "abc123", mediaType: "image/png" });
+    const { container } = render(<Composer sessionId="s1" />);
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+
+    // Simulate selecting an image file
+    const file = new File(["img"], "test.png", { type: "image/png" });
+    Object.defineProperty(fileInput, "files", { value: [file], writable: false });
+    fireEvent.change(fileInput);
+
+    // Wait for async readFileAsBase64 to complete
+    await waitFor(() => {
+      expect(screen.getByAltText("test.png")).toBeTruthy();
+    });
+
+    // Remove the image
+    fireEvent.click(screen.getByLabelText("Remove image"));
+    expect(screen.queryByAltText("test.png")).toBeFalsy();
   });
 });
