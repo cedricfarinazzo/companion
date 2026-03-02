@@ -17,6 +17,7 @@ const mockApi = {
   regenerateAgentWebhookSecret: vi.fn(),
   listSkills: vi.fn(),
   listEnvs: vi.fn(),
+  getBackendModels: vi.fn(),
 };
 
 vi.mock("../api.js", () => ({
@@ -33,6 +34,7 @@ vi.mock("../api.js", () => ({
       mockApi.regenerateAgentWebhookSecret(...args),
     listSkills: (...args: unknown[]) => mockApi.listSkills(...args),
     listEnvs: (...args: unknown[]) => mockApi.listEnvs(...args),
+    getBackendModels: (...args: unknown[]) => mockApi.getBackendModels(...args),
   },
 }));
 
@@ -78,6 +80,8 @@ beforeEach(() => {
   // Default: no skills or envs fetched
   mockApi.listSkills.mockResolvedValue([]);
   mockApi.listEnvs.mockResolvedValue([]);
+  // Default: no dynamic models (fall back to static list)
+  mockApi.getBackendModels.mockResolvedValue([]);
   window.location.hash = "#/agents";
 });
 

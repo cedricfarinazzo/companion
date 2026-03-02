@@ -219,7 +219,7 @@ export function HomePage() {
 
   // Fetch dynamic models for the selected backend
   useEffect(() => {
-    if (backend !== "codex") {
+    if (backend !== "codex" && backend !== "copilot") {
       setDynamicModels(null);
       return;
     }

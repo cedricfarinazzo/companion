@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useStore } from "../store.js";
 import { sendToSession } from "../ws.js";
-import { CLAUDE_MODES, CODEX_MODES } from "../utils/backends.js";
+import { getModesForBackend } from "../utils/backends.js";
 import { api, type SavedPrompt } from "../api.js";
 import type { ModeOption } from "../utils/backends.js";
 import { ModelSwitcher } from "./ModelSwitcher.js";
@@ -39,7 +39,7 @@ export function Composer({ sessionId }: { sessionId: string }) {
   const currentMode = sessionData?.permissionMode || "acceptEdits";
   const isPlan = currentMode === "plan";
   const isCodex = sessionData?.backend_type === "codex";
-  const modes: ModeOption[] = isCodex ? CODEX_MODES : CLAUDE_MODES;
+  const modes: ModeOption[] = getModesForBackend(sessionData?.backend_type ?? "claude");
   const modeLabel = modes.find((m) => m.value === currentMode)?.label?.toLowerCase() || currentMode;
 
   const mention = useMentionMenu({

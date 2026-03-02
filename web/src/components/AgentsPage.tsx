@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { api, type AgentInfo, type AgentExport, type AgentExecution, type McpServerConfigAgent, type CompanionEnv } from "../api.js";
-import { getModelsForBackend, getDefaultModel, getAgentModesForBackend, getDefaultAgentMode } from "../utils/backends.js";
+import { getModelsForBackend, getDefaultModel, getAgentModesForBackend, getDefaultAgentMode, toModelOptions, type ModelOption } from "../utils/backends.js";
 import { FolderPicker } from "./FolderPicker.js";
 import { timeAgo } from "../utils/time-ago.js";
 import type { Route } from "../utils/routing.js";
@@ -587,7 +587,7 @@ function AgentCard({
                 {agent.enabled ? "Enabled" : "Disabled"}
               </span>
               <span className="px-1.5 py-0.5 text-[10px] rounded-full bg-cc-hover text-cc-muted">
-                {agent.backendType === "codex" ? "Codex" : "Claude"}
+                {agent.backendType === "codex" ? "Codex" : agent.backendType === "copilot" ? "Copilot" : "Claude"}
               </span>
             </div>
             {agent.description && (
@@ -694,7 +694,8 @@ function AgentEditor({
   onSave: () => void;
   onCancel: () => void;
 }) {
-  const models = getModelsForBackend(form.backendType);
+  const [dynamicModels, setDynamicModels] = useState<ModelOption[] | null>(null);
+  const models = dynamicModels || getModelsForBackend(form.backendType);
   const modes = getAgentModesForBackend(form.backendType);
   const [showFolderPicker, setShowFolderPicker] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(() => countAdvancedFeatures(form) > 0);
@@ -726,11 +727,22 @@ function AgentEditor({
     api.listEnvs().then(setEnvProfiles).catch(() => {});
   }, []);
 
+  // Fetch dynamic models for codex/copilot
+  useEffect(() => {
+    setDynamicModels(null);
+    if (form.backendType !== "codex" && form.backendType !== "copilot") return;
+    api.getBackendModels(form.backendType).then((fetched) => {
+      if (fetched.length > 0) {
+        setDynamicModels(toModelOptions(fetched));
+      }
+    }).catch(() => {});
+  }, [form.backendType]); // eslint-disable-line react-hooks/exhaustive-deps
+
   function updateField<K extends keyof AgentFormData>(key: K, value: AgentFormData[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
   }
 
-  function handleBackendChange(backend: "claude" | "codex") {
+  function handleBackendChange(backend: "claude" | "codex" | "copilot") {
     setForm((prev) => ({
       ...prev,
       backendType: backend,
@@ -957,6 +969,12 @@ function AgentEditor({
                 className={`flex items-center gap-1 px-2 py-1 text-xs rounded-md transition-colors cursor-pointer ${form.backendType === "codex" ? "bg-cc-card text-cc-fg font-medium shadow-sm" : "text-cc-muted hover:text-cc-fg"}`}
               >
                 Codex
+              </button>
+              <button
+                onClick={() => handleBackendChange("copilot")}
+                className={`flex items-center gap-1 px-2 py-1 text-xs rounded-md transition-colors cursor-pointer ${form.backendType === "copilot" ? "bg-cc-card text-cc-fg font-medium shadow-sm" : "text-cc-muted hover:text-cc-fg"}`}
+              >
+                Copilot
               </button>
             </div>
 
