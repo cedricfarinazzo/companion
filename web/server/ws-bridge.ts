@@ -454,8 +454,8 @@ export class WsBridge {
 
   // ── Browser WebSocket handlers ──────────────────────────────────────────
 
-  handleBrowserOpen(ws: ServerWebSocket<SocketData>, sessionId: string) {
-    const session = this.getOrCreateSession(sessionId);
+  handleBrowserOpen(ws: ServerWebSocket<SocketData>, sessionId: string, backendType?: BackendType) {
+    const session = this.getOrCreateSession(sessionId, backendType);
     const browserData = ws.data as BrowserSocketData;
     browserData.subscribed = false;
     browserData.lastAckSeq = 0;

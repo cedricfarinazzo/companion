@@ -1683,6 +1683,20 @@ function PlaygroundSessionItems() {
         </div>
       </Card>
 
+      {/* Running — GitHub Copilot */}
+      <Card label="Running — GitHub Copilot">
+        <div className="bg-cc-sidebar rounded-lg p-1">
+          <SessionItem
+            session={mockSession({ isConnected: true, status: "running", backendType: "copilot" })}
+            isActive={false}
+            sessionName="Write unit tests"
+            permCount={0}
+            isRecentlyRenamed={false}
+            {...noopSessionItemProps}
+          />
+        </div>
+      </Card>
+
       {/* Awaiting Input — 2 permissions */}
       <Card label="Awaiting Input — 2 permissions pending">
         <div className="bg-cc-sidebar rounded-lg p-1">

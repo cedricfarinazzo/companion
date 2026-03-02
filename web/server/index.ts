@@ -241,7 +241,7 @@ const server = Bun.serve<SocketData>({
         wsBridge.handleCLIOpen(ws, data.sessionId);
         launcher.markConnected(data.sessionId);
       } else if (data.kind === "browser") {
-        wsBridge.handleBrowserOpen(ws, data.sessionId);
+        wsBridge.handleBrowserOpen(ws, data.sessionId, launcher.getSession(data.sessionId)?.backendType);
       } else if (data.kind === "terminal") {
         terminalManager.addBrowserSocket(ws);
       }
