@@ -53,11 +53,18 @@ function StatusDot({ status }: { status: DerivedStatus }) {
   }
 }
 
-function BackendBadge({ type }: { type: "claude" | "codex" }) {
+function BackendBadge({ type }: { type: "claude" | "codex" | "copilot" }) {
   if (type === "codex") {
     return (
       <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-500 leading-none">
         CX
+      </span>
+    );
+  }
+  if (type === "copilot") {
+    return (
+      <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-500 leading-none">
+        CP
       </span>
     );
   }

@@ -13,7 +13,7 @@ export interface TaskPanelSectionDef {
   /** Short description for the config UI */
   description: string;
   /** Which backends this section is relevant for. null = all */
-  backends: ("claude" | "codex")[] | null;
+  backends: ("claude" | "codex" | "copilot")[] | null;
 }
 
 export interface TaskPanelConfig {

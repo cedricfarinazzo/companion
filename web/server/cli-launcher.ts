@@ -13,6 +13,7 @@ import type { SessionStore } from "./session-store.js";
 import type { BackendType } from "./session-types.js";
 import type { RecorderManager } from "./recorder.js";
 import { CodexAdapter } from "./codex-adapter.js";
+import { CopilotAdapter } from "./copilot-adapter.js";
 import { resolveBinary, getEnrichedPath } from "./path-resolver.js";
 import { containerManager } from "./container-manager.js";
 import {
@@ -173,6 +174,7 @@ export class CliLauncher {
   private store: SessionStore | null = null;
   private recorder: RecorderManager | null = null;
   private onCodexAdapter: ((sessionId: string, adapter: CodexAdapter) => void) | null = null;
+  private onCopilotAdapter: ((sessionId: string, adapter: CopilotAdapter) => void) | null = null;
   private exitHandlers: ((sessionId: string, exitCode: number | null) => void)[] = [];
 
   constructor(port: number) {
@@ -182,6 +184,11 @@ export class CliLauncher {
   /** Register a callback for when a CodexAdapter is created (WsBridge needs to attach it). */
   onCodexAdapterCreated(cb: (sessionId: string, adapter: CodexAdapter) => void): void {
     this.onCodexAdapter = cb;
+  }
+
+  /** Register a callback for when a CopilotAdapter is created (WsBridge needs to attach it). */
+  onCopilotAdapterCreated(cb: (sessionId: string, adapter: CopilotAdapter) => void): void {
+    this.onCopilotAdapter = cb;
   }
 
   /** Register a callback for when a CLI/Codex process exits. */
@@ -407,6 +414,13 @@ export class CliLauncher {
         containerName: info.containerName,
         containerImage: info.containerImage,
         containerCwd: info.containerCwd,
+        env: runtimeEnv,
+      });
+    } else if (info.backendType === "copilot") {
+      this.spawnCopilot(sessionId, info, {
+        model: info.model,
+        permissionMode: info.permissionMode,
+        cwd: info.cwd,
         env: runtimeEnv,
       });
     } else {
@@ -637,6 +651,92 @@ export class CliLauncher {
         console.warn(`[cli-launcher] Failed to bootstrap ${name}/ from legacy home:`, e);
       }
     }
+  }
+
+  /**
+   * Spawn GitHub Copilot CLI with ACP stdio transport.
+   */
+  private spawnCopilot(sessionId: string, info: SdkSessionInfo, options: LaunchOptions): void {
+    let binary = "copilot";
+    const resolved = resolveBinary(binary);
+    if (resolved) {
+      binary = resolved;
+    } else {
+      console.error(`[cli-launcher] Binary "${binary}" not found in PATH`);
+      info.state = "exited";
+      info.exitCode = 127;
+      this.persistState();
+      return;
+    }
+
+    const args = ["--acp", "--stdio"];
+    if (options.model) {
+      args.push("--model", options.model);
+    }
+
+    console.log(`[cli-launcher] Spawning Copilot session ${sessionId}: ${binary} ${args.join(" ")}`);
+
+    const proc = Bun.spawn([binary, ...args], {
+      cwd: info.cwd,
+      env: {
+        ...process.env,
+        ...options.env,
+        PATH: getEnrichedPath(),
+      },
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    info.pid = proc.pid;
+    this.processes.set(sessionId, proc);
+
+    // Pipe stderr for diagnostics
+    const stderr = proc.stderr;
+    if (stderr && typeof stderr !== "number") {
+      this.pipeStream(sessionId, stderr, "stderr");
+    }
+
+    const adapter = new CopilotAdapter(proc, sessionId, {
+      model: options.model,
+      cwd: info.cwd,
+      permissionMode: options.permissionMode,
+      acpSessionId: info.cliSessionId,
+      recorder: this.recorder ?? undefined,
+    });
+
+    // Store ACP session ID when session/new completes
+    adapter.onSessionMeta((meta) => {
+      if (meta.cliSessionId) {
+        const session = this.sessions.get(sessionId);
+        if (session) {
+          session.cliSessionId = meta.cliSessionId;
+          this.persistState();
+        }
+      }
+    });
+
+    if (this.onCopilotAdapter) {
+      this.onCopilotAdapter(sessionId, adapter);
+    }
+
+    info.state = "connected";
+
+    proc.exited.then((exitCode) => {
+      console.log(`[cli-launcher] Copilot session ${sessionId} exited (code=${exitCode})`);
+      const session = this.sessions.get(sessionId);
+      if (session) {
+        session.state = "exited";
+        session.exitCode = exitCode;
+      }
+      this.processes.delete(sessionId);
+      this.persistState();
+      for (const handler of this.exitHandlers) {
+        try { handler(sessionId, exitCode); } catch {}
+      }
+    });
+
+    this.persistState();
   }
 
   private spawnCodex(sessionId: string, info: SdkSessionInfo, options: LaunchOptions): void {

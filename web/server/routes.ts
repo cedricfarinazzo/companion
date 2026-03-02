@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { existsSync, readFileSync } from "node:fs";
 import type { CliLauncher } from "./cli-launcher.js";
+import { discoverCopilotModels } from "./copilot-models.js";
 import type { WsBridge } from "./ws-bridge.js";
 import type { SessionStore } from "./session-store.js";
 import type { WorktreeTracker } from "./worktree-tracker.js";
@@ -175,7 +176,7 @@ export function createRoutes(
         : undefined;
       const forkSession = body.forkSession === true;
       const backend = body.backend ?? "claude";
-      if (backend !== "claude" && backend !== "codex") {
+      if (backend !== "claude" && backend !== "codex" && backend !== "copilot") {
         return c.json({ error: `Invalid backend: ${String(backend)}` }, 400);
       }
 
@@ -466,7 +467,7 @@ export function createRoutes(
           : undefined;
         const forkSession = body.forkSession === true;
         const backend = body.backend ?? "claude";
-        if (backend !== "claude" && backend !== "codex") {
+        if (backend !== "claude" && backend !== "codex" && backend !== "copilot") {
           await stream.writeSSE({
             event: "error",
             data: JSON.stringify({ error: `Invalid backend: ${String(backend)}` }),
@@ -1529,12 +1530,32 @@ export function createRoutes(
 
     backends.push({ id: "claude", name: "Claude Code", available: resolveBinary("claude") !== null });
     backends.push({ id: "codex", name: "Codex", available: resolveBinary("codex") !== null });
+    backends.push({ id: "copilot", name: "GitHub Copilot", available: resolveBinary("copilot") !== null });
 
     return c.json(backends);
   });
 
-  api.get("/backends/:id/models", (c) => {
+  api.get("/backends/:id/models", async (c) => {
     const backendId = c.req.param("id");
+
+    if (backendId === "copilot") {
+      try {
+        const models = await discoverCopilotModels();
+        if (models.length === 0) {
+          return c.json({ error: "No models returned from Copilot" }, 404);
+        }
+        return c.json(
+          models.map((m) => ({
+            value: m.modelId,
+            label: m.name || m.modelId,
+            description: m.description || "",
+          })),
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return c.json({ error: `Failed to discover Copilot models: ${msg}` }, 500);
+      }
+    }
 
     if (backendId === "codex") {
       // Read Codex model list from its local cache file

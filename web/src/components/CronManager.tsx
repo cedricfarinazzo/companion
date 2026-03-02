@@ -79,7 +79,7 @@ interface JobFormData {
   recurring: boolean;
   schedule: string;
   oneTimeDate: string;
-  backendType: "claude" | "codex";
+  backendType: "claude" | "codex" | "copilot";
   model: string;
   cwd: string;
 }
@@ -404,10 +404,12 @@ export function CronManager({ onClose, embedded = false }: Props) {
               className={`text-[9px] font-medium px-1.5 rounded-full leading-[16px] shrink-0 ${
                 job.backendType === "codex"
                   ? "text-blue-500 bg-blue-500/10"
-                  : "text-[#5BA8A0] bg-[#5BA8A0]/10"
+                  : job.backendType === "copilot"
+                    ? "text-purple-500 bg-purple-500/10"
+                    : "text-[#5BA8A0] bg-[#5BA8A0]/10"
               }`}
             >
-              {job.backendType === "codex" ? "Codex" : "Claude"}
+              {job.backendType === "codex" ? "Codex" : job.backendType === "copilot" ? "Copilot" : "Claude"}
             </span>
             {job.consecutiveFailures > 0 && (
               <span className="text-[9px] font-medium px-1.5 rounded-full leading-[16px] shrink-0 text-cc-error bg-cc-error/10">
@@ -577,10 +579,12 @@ function CronJobRow({ job, isRunning, onStartEdit, onDelete, onToggle, onRunNow 
             className={`text-[9px] font-medium px-1.5 rounded-full leading-[16px] shrink-0 ${
               job.backendType === "codex"
                 ? "text-blue-500 bg-blue-500/10"
-                : "text-[#5BA8A0] bg-[#5BA8A0]/10"
+                : job.backendType === "copilot"
+                  ? "text-purple-500 bg-purple-500/10"
+                  : "text-[#5BA8A0] bg-[#5BA8A0]/10"
             }`}
           >
-            {job.backendType === "codex" ? "Codex" : "Claude"}
+            {job.backendType === "codex" ? "Codex" : job.backendType === "copilot" ? "Copilot" : "Claude"}
           </span>
           {job.consecutiveFailures > 0 && (
             <span className="text-[9px] font-medium px-1.5 rounded-full leading-[16px] shrink-0 text-cc-error bg-cc-error/10">
@@ -706,7 +710,7 @@ function JobForm({
   // Fetch dynamic models when backend changes
   useEffect(() => {
     setDynamicModels(null);
-    if (form.backendType !== "codex") return;
+    if (form.backendType !== "codex" && form.backendType !== "copilot") return;
     api.getBackendModels(form.backendType).then((fetched) => {
       if (fetched.length > 0) {
         const options = toModelOptions(fetched);
@@ -835,7 +839,7 @@ function JobForm({
             onClick={() => setShowBackendDropdown(!showBackendDropdown)}
             className="flex items-center gap-1.5 px-2.5 py-2 min-h-[44px] text-xs font-medium text-cc-fg rounded-lg hover:bg-cc-hover transition-colors cursor-pointer"
           >
-            <span>{form.backendType === "codex" ? "Codex" : "Claude Code"}</span>
+            <span>{form.backendType === "codex" ? "Codex" : form.backendType === "copilot" ? "Copilot" : "Claude Code"}</span>
             <svg viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3 opacity-50">
               <path d="M4 6l4 4 4-4" />
             </svg>
@@ -846,6 +850,7 @@ function JobForm({
                 [
                   { value: "claude", label: "Claude Code" },
                   { value: "codex", label: "Codex" },
+                  { value: "copilot", label: "GitHub Copilot" },
                 ] as const
               ).map((opt) => (
                 <button

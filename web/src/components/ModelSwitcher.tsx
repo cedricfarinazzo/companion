@@ -3,6 +3,7 @@ import { useStore } from "../store.js";
 import { sendToSession } from "../ws.js";
 import { getModelsForBackend } from "../utils/backends.js";
 import type { ModelOption } from "../utils/backends.js";
+import { api } from "../api.js";
 
 interface ModelSwitcherProps {
   sessionId: string;
@@ -22,7 +23,22 @@ export function ModelSwitcher({ sessionId }: ModelSwitcherProps) {
   const backendType = sdkSession?.backendType ?? runtimeSession?.backend_type ?? "claude";
   // Prefer runtime model (from CLI init) over sdkSession model (from launch config)
   const currentModel = runtimeSession?.model ?? sdkSession?.model ?? "";
-  const models = getModelsForBackend(backendType);
+
+  // Fetch dynamic models for backends that support it (copilot)
+  const [dynamicModels, setDynamicModels] = useState<ModelOption[] | null>(null);
+  useEffect(() => {
+    if (backendType !== "copilot") {
+      setDynamicModels(null);
+      return;
+    }
+    api.getBackendModels(backendType).then((infos) => {
+      if (infos.length > 0) {
+        setDynamicModels(infos.map((m) => ({ value: m.value, label: m.label, icon: "" })));
+      }
+    }).catch(() => {/* use static fallback on error */});
+  }, [backendType]);
+
+  const models = dynamicModels ?? getModelsForBackend(backendType);
 
   // Find the matching model option, or build a fallback for custom models
   const currentOption: ModelOption | null =

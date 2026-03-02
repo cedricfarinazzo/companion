@@ -3695,10 +3695,11 @@ index 0000000..e69de29
 
 describe("GET /api/backends", () => {
   it("returns both backends with availability status", async () => {
-    // resolveBinary returns a path for both binaries
+    // resolveBinary returns a path for all binaries
     mockResolveBinary
       .mockReturnValueOnce("/usr/bin/claude")
-      .mockReturnValueOnce("/usr/bin/codex");
+      .mockReturnValueOnce("/usr/bin/codex")
+      .mockReturnValueOnce("/usr/bin/copilot");
 
     const res = await app.request("/api/backends", { method: "GET" });
 
@@ -3707,12 +3708,14 @@ describe("GET /api/backends", () => {
     expect(json).toEqual([
       { id: "claude", name: "Claude Code", available: true },
       { id: "codex", name: "Codex", available: true },
+      { id: "copilot", name: "GitHub Copilot", available: true },
     ]);
   });
 
   it("marks backends as unavailable when binary is not found", async () => {
-    // resolveBinary returns null for both
+    // resolveBinary returns null for all
     mockResolveBinary
+      .mockReturnValueOnce(null)
       .mockReturnValueOnce(null)
       .mockReturnValueOnce(null);
 
@@ -3723,13 +3726,15 @@ describe("GET /api/backends", () => {
     expect(json).toEqual([
       { id: "claude", name: "Claude Code", available: false },
       { id: "codex", name: "Codex", available: false },
+      { id: "copilot", name: "GitHub Copilot", available: false },
     ]);
   });
 
   it("handles mixed availability", async () => {
     mockResolveBinary
       .mockReturnValueOnce("/usr/bin/claude") // claude found
-      .mockReturnValueOnce(null); // codex not found
+      .mockReturnValueOnce(null) // codex not found
+      .mockReturnValueOnce(null); // copilot not found
 
     const res = await app.request("/api/backends", { method: "GET" });
 
