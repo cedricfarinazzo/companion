@@ -670,6 +670,9 @@ export class CliLauncher {
     }
 
     const args = ["--acp", "--stdio"];
+    if (options.model) {
+      args.push("--model", options.model);
+    }
 
     console.log(`[cli-launcher] Spawning Copilot session ${sessionId}: ${binary} ${args.join(" ")}`);
 

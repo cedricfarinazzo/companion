@@ -289,22 +289,12 @@ export class CopilotAdapter {
       if (models?.availableModels) {
         this.availableModels = models.availableModels;
       }
-      const resolvedModel = this.options.model
-        || models?.currentModelId
+      // currentModelId reflects the model set via --model CLI flag (or Copilot's default)
+      const resolvedModel = models?.currentModelId
+        || this.options.model
         || this.availableModels[0]?.modelId
         || "";
       this.currentModel = resolvedModel;
-
-      // If a specific model was requested, try to set it
-      if (this.options.model && models?.currentModelId && this.options.model !== models.currentModelId) {
-        try {
-          await (this.connection as ClientSideConnection & {
-            unstable_setSessionModel?: (p: { sessionId: string; modelId: string }) => Promise<unknown>;
-          }).unstable_setSessionModel?.({ sessionId, modelId: this.options.model });
-        } catch (err) {
-          console.warn(`[copilot-adapter] Could not set model ${this.options.model}:`, err);
-        }
-      }
 
       // Set permission mode if not default
       const initialMode = companionModeToAcpMode(this.options.permissionMode || "default");
