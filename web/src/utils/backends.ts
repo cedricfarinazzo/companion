@@ -76,28 +76,72 @@ export const CODEX_AGENT_MODES: ModeOption[] = [
   { value: "default", label: "Supervised" },
 ];
 
+// Copilot ACP models (from live probe of copilot --acp session/new)
+export const COPILOT_MODELS: ModelOption[] = [
+  { value: "claude-sonnet-4.6", label: "Claude Sonnet 4.6", icon: "◆" },
+  { value: "claude-sonnet-4.5", label: "Claude Sonnet 4.5", icon: "◆" },
+  { value: "claude-haiku-4.5", label: "Claude Haiku 4.5", icon: "⚡" },
+  { value: "claude-opus-4.6", label: "Claude Opus 4.6", icon: "■" },
+  { value: "claude-opus-4.5", label: "Claude Opus 4.5", icon: "■" },
+  { value: "claude-sonnet-4", label: "Claude Sonnet 4", icon: "◆" },
+  { value: "gemini-3-pro-preview", label: "Gemini 3 Pro", icon: "✦" },
+  { value: "gpt-5.3-codex", label: "GPT-5.3 Codex", icon: "✳" },
+  { value: "gpt-5.2-codex", label: "GPT-5.2 Codex", icon: "◆" },
+  { value: "gpt-5.2", label: "GPT-5.2", icon: "●" },
+  { value: "gpt-5.1-codex-max", label: "GPT-5.1 Codex Max", icon: "■" },
+  { value: "gpt-5.1-codex", label: "GPT-5.1 Codex", icon: "✳" },
+  { value: "gpt-5.1", label: "GPT-5.1", icon: "◆" },
+  { value: "gpt-5.1-codex-mini", label: "GPT-5.1 Codex Mini", icon: "⚡" },
+  { value: "gpt-5-mini", label: "GPT-5 mini", icon: "⚡" },
+  { value: "gpt-4.1", label: "GPT-4.1", icon: "◕" },
+];
+
+// Copilot ACP modes (from ACP session-modes spec)
+export const COPILOT_MODES: ModeOption[] = [
+  { value: "default", label: "Agent" },
+  { value: "plan", label: "Plan" },
+  { value: "bypassPermissions", label: "Autopilot" },
+];
+
+export const COPILOT_AGENT_MODES: ModeOption[] = [
+  { value: "bypassPermissions", label: "Full Auto" },
+  { value: "default", label: "Supervised" },
+];
+
 // ─── Getters ─────────────────────────────────────────────────────────────────
 
 export function getModelsForBackend(backend: BackendType): ModelOption[] {
-  return backend === "codex" ? CODEX_MODELS : CLAUDE_MODELS;
+  if (backend === "codex") return CODEX_MODELS;
+  if (backend === "copilot") return COPILOT_MODELS;
+  return CLAUDE_MODELS;
 }
 
 export function getModesForBackend(backend: BackendType): ModeOption[] {
-  return backend === "codex" ? CODEX_MODES : CLAUDE_MODES;
+  if (backend === "codex") return CODEX_MODES;
+  if (backend === "copilot") return COPILOT_MODES;
+  return CLAUDE_MODES;
 }
 
 export function getAgentModesForBackend(backend: BackendType): ModeOption[] {
-  return backend === "codex" ? CODEX_AGENT_MODES : CLAUDE_AGENT_MODES;
+  if (backend === "codex") return CODEX_AGENT_MODES;
+  if (backend === "copilot") return COPILOT_AGENT_MODES;
+  return CLAUDE_AGENT_MODES;
 }
 
 export function getDefaultModel(backend: BackendType): string {
-  return backend === "codex" ? CODEX_MODELS[0].value : CLAUDE_MODELS[0].value;
+  if (backend === "codex") return CODEX_MODELS[0].value;
+  if (backend === "copilot") return COPILOT_MODELS[0].value;
+  return CLAUDE_MODELS[0].value;
 }
 
 export function getDefaultMode(backend: BackendType): string {
-  return backend === "codex" ? CODEX_MODES[0].value : CLAUDE_MODES[0].value;
+  if (backend === "codex") return CODEX_MODES[0].value;
+  if (backend === "copilot") return COPILOT_MODES[0].value;
+  return CLAUDE_MODES[0].value;
 }
 
 export function getDefaultAgentMode(backend: BackendType): string {
-  return backend === "codex" ? CODEX_AGENT_MODES[0].value : CLAUDE_AGENT_MODES[0].value;
+  if (backend === "codex") return CODEX_AGENT_MODES[0].value;
+  if (backend === "copilot") return COPILOT_AGENT_MODES[0].value;
+  return CLAUDE_AGENT_MODES[0].value;
 }

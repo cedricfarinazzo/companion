@@ -175,7 +175,7 @@ export function createRoutes(
         : undefined;
       const forkSession = body.forkSession === true;
       const backend = body.backend ?? "claude";
-      if (backend !== "claude" && backend !== "codex") {
+      if (backend !== "claude" && backend !== "codex" && backend !== "copilot") {
         return c.json({ error: `Invalid backend: ${String(backend)}` }, 400);
       }
 
@@ -466,7 +466,7 @@ export function createRoutes(
           : undefined;
         const forkSession = body.forkSession === true;
         const backend = body.backend ?? "claude";
-        if (backend !== "claude" && backend !== "codex") {
+        if (backend !== "claude" && backend !== "codex" && backend !== "copilot") {
           await stream.writeSSE({
             event: "error",
             data: JSON.stringify({ error: `Invalid backend: ${String(backend)}` }),
@@ -1529,6 +1529,7 @@ export function createRoutes(
 
     backends.push({ id: "claude", name: "Claude Code", available: resolveBinary("claude") !== null });
     backends.push({ id: "codex", name: "Codex", available: resolveBinary("codex") !== null });
+    backends.push({ id: "copilot", name: "GitHub Copilot", available: resolveBinary("copilot") !== null });
 
     return c.json(backends);
   });
